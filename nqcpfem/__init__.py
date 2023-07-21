@@ -11,19 +11,19 @@ try:
         os.environ['PETSC_DIR'] = '/usr/lib/petscdir/petsc-complex'
         os.environ['SLEPC_DIR'] = '/usr/lib/slepcdir/slepc-complex'
         importlib.reload(sys.modules['petsc4py'])
-        from petsc4py import PETSc
+        from petsc4py import PETSc # type: ignore
 
         if np.dtype(PETSc.ScalarType).kind != 'c':
-            LOG.warning(f'unable to load PETSc with complex scalartype. This will cause errors when using PETSc.'
+            LOG.warning(f'unable to load PETSc with complex scalar type. This will cause errors when using PETSc.'
                         f'To fix this specify PETSC_DIR, SLEPC_DIR environment variables to be the complex builds of PETSc and SLEPc') # unable to load PETSc using complex build
             class PETSc(): # type: ignore
                 ScalarType = np.complex128
 except ModuleNotFoundError as e:
-    LOG.info('PETSc module not found. Proceeding __init__ with PETSc.Scalartype = np.complex128')
+    LOG.info('PETSc module not found. Proceeding __init__ with `PETSc.ScalarType = np.complex128`')
     class PETSc():
         """Placeholder class for using this module if PETSc is not installed"""
         ScalarType = np.complex128
-# Physical Constants used for definining the unit convention used in the model.
+# Physical Constants used for defining the unit convention used in the model.
 _hbar = 1.054571817e-34  # J*s
 _m_e = 9.1093837015e-31  # Kg
 _L = 50e-9  # m.    Size of a Germanium quantum dot according to Hendrickx et. al 2018
@@ -34,8 +34,8 @@ _varepsilon_0 =  8.8541878128e-12 # permittivity of vacuum  in farad per meter
 
 
 import sympy
-constants = {'hbar': sympy.symbols('\hbar'),
-    'pi': sympy.symbols('\pi'),
+constants = {'hbar': sympy.symbols(r'\hbar'),
+    'pi': sympy.symbols(r'\pi'),
     'm_e':  sympy.symbols(r'm_{e}'),
     'varepsilon_0':  sympy.symbols(r'\varepsilon_{0}'),
     'e':  sympy.symbols(r'e'),
@@ -44,7 +44,7 @@ constants = {'hbar': sympy.symbols('\hbar'),
 
 values =  {
     constants['hbar']: _hbar,
-    sympy.symbols('hbar'): _hbar, # \hbar name breaks lambdify so we often use the hbar name instead
+    sympy.symbols('hbar'): _hbar, # \hbar name breaks `lambdify` so we often use the hbar name instead
     'hbar': _hbar,
     constants['pi']: np.pi,
     'pi': np.pi,
@@ -60,7 +60,6 @@ values =  {
 
 UNIT_CONVENTION = {'E': _hbar**2/(_m_e*_L**2),  # energy scale (in Joules)
                    't': (_m_e*_L**2)/_hbar,  # time=hbar/energy_scale (in seconds). in these units if omega=1 a
-                                             # regualr SHO has postional variance _L**2/2
                    'B': _hbar/(_L**2 * _e),  # magnetic field (in Tesla)
                    'x': _L,  # length scale (in meters)
                    'Q': _e,  # typical charge (in Coulombs)

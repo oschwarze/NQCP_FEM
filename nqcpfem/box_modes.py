@@ -1,18 +1,16 @@
 import numpy as np
 import scipy as sp
 import itertools
+
+from .updatable_object import auto_update
 from .envelope_function import EnvelopeFunctionModel
-from .band_modeling import grouped_to_canonical, canonial_to_grouped, Potential, HarmonicOscillatorPotential, \
-    LinearPotential, BipartitionPotential
 from typing import Union
 from . import _hbar
 from functools import partial
+import sympy
 
 
 class BoxEFM(EnvelopeFunctionModel):
-	__analytical_potentials__ = (BipartitionPotential, LinearPotential,
-								 HarmonicOscillatorPotential)  # list of potential type that have been analytically determined
-
 	def __init__(self, band_model, domain, nx, ny, nz):
 		"""
 		Box Modes for the EFM
@@ -20,15 +18,18 @@ class BoxEFM(EnvelopeFunctionModel):
 		:param domain:
 		"""
 		self.n_modes = [nx, ny, nz]
-
-		super().__init__(band_model, domain)
+		from envelope_function import RectangleDomain
+		if not isinstance(domain,RectangleDomain):
+			raise TypeError(f'unsupported domain type. Only `RectangleDomain` is supported, got: {domain} ({type(domain)})')
+		super().__init__(band_model, domain,**{'nx':nx,'ny':ny,'nz':nz})
 
 	# region analytical potentials
 	@staticmethod
-	def __make_linear_potential_matrix__(V,L,n_modes):
+	def __make_linear_potential_matrix__(V:float|sympy.Symbol,L:float|sympy.Symbol,n_modes:int):
 		"""
-		Constructs a linear potential matrix
-		:param V:
+		Given a potential of the form V(x) = V*x, with x being the position coordinate ranging in (-L/2,L/2) 
+		:param V: 
+		:type V: float
 		:return:
 		"""
 		def V_mel(m, n):
@@ -37,19 +38,19 @@ class BoxEFM(EnvelopeFunctionModel):
 			n += 1
 			with np.errstate(divide='ignore', invalid='ignore'):
 				diagonal = 0
-				off_diagonal = ((-1) ** (n + m) - 1) * 4 * L * m * n / (np.pi ** 2 * (m ** 2 - n ** 2) ** 2)
+				off_diagonal = ((-1) ** (n + m) - 1) * 4 * m * n / (np.pi ** 2 * (m ** 2 - n ** 2) ** 2)
 
 			return np.where(n == m, diagonal, off_diagonal)
 
 		V_mat = np.fromfunction(V_mel, (n_modes, n_modes), dtype='complex')
-		return V_mat * V
+		return V_mat * V * L 
 
 	@staticmethod
 	def __make_bipartition_matrix__(V, L, n_modes):
 		"""
-		COnstructs matrix representation of V(x) = \chi_{{x>0}} * V where x is the specified direction given by dir
-		:param float V: strength
-		:param int dir: direction
+		COnstructs matrix representation of V(x) = \chi_{{x>0}} * V where x is the specified direction which lies in the range (-L/2,L/2)
+		:param float V: strength of the potential
+		:param int n_modes: Number of modes in the direction x
 		:return:
 		"""
 
@@ -71,10 +72,24 @@ class BoxEFM(EnvelopeFunctionModel):
 		return V * V_mat
 
 	@staticmethod
-	def __make_harmonic_matrix__(V, L,n_modes,mass):
-
-		# V = omega**2*m
-
+	def __make_harmonic_matrix__(omega:float|sympy.Symbol,m:float|sympy.Symbol, L:float|sympy.Symbol,n_modes:int):
+		"""
+		The function `__make_harmonic_matrix__` calculates a harmonic matrix based on the given parameters
+		and returns the result multiplied by 0.5*m*omega^2.
+		
+		:param omega: The parameter "omega" represents the angular frequency of the harmonic oscillator. It
+		can be either a float value or a symbolic variable (e.g., sympy.Symbol)
+		:type omega: float|sympy.Symbol
+		:param m: mass of the system
+		:type m: float|sympy.Symbol
+		:param L: The parameter L represents the length of the system
+		:type L: float|sympy.Symbol
+		:param n_modes: The parameter `n_modes` represents the number of modes in the harmonic matrix
+		:type n_modes: int
+		:return: a matrix that is calculated based on the input parameters omega, m, L, and n_modes. The
+		matrix is multiplied by 0.5*m*omega^2 before being returned.
+		"""
+		
 		def V_mel(n, m):
 			# indexing with zero requires us to add one to convert to the mode numbers
 			n += 1
@@ -88,53 +103,27 @@ class BoxEFM(EnvelopeFunctionModel):
 
 		matrix = np.fromfunction(V_mel, (n_modes, n_modes), dtype='complex')
 
-		return matrix * V ** 2 * mass
+		return matrix * 0.5*m*omega**2
 
 	# endregion
 
-	def add_potential(self, V):
-
-		V.free_parameter_values.update(self.band_model.parameter_dict)
-
-		if isinstance(V, self.__analytical_potentials__):
-			for dir in V.directions:
-				L_names = ['Lx', 'Ly', 'Lz']
-				L = getattr(self.domain, L_names[dir])
-				n_modes = self.n_modes[dir]
-				if isinstance(V, LinearPotential):
-					val = V.strength
-					V_mat = self.__make_linear_potential_matrix__(val, L,n_modes)
-				if isinstance(V, BipartitionPotential):
-					val = V.strength
-					V_mat = self.__make_bipartition_matrix__(val, L,n_modes)
-				if isinstance(V, HarmonicOscillatorPotential):
-					try:
-						m = self.band_model.parameter_dict['mass']
-					except KeyError as err:
-						m = self.band_model.parameter_dict['m']
-					val = V.omega_value
-					V_mat = self.__make_harmonic_matrix__(val, L,n_modes,m)
-
-				# extend V_mat to be defined on all spatial coordinates
-				missing = []
-				for i in range(3):
-					if i != dir:
-						missing.append(i)
-						V_mat = np.tensordot(V_mat, np.eye(self.n_modes[i], dtype='complex'), axes=0)
-				# reorder
-				ordering = [dir] + missing
-				transposition = [2 * ordering.index(i) + j for i in range(3) for j in
-								 range(2)]  # j loop is because each direction has two axes
-				V_mat = V_mat.transpose(transposition)
-
-				self.potential_constructions.append(V_mat)
-
-		elif not isinstance(V, Potential):
-			raise TypeError(f'potentials must be instances of Potential. Got {type(V)}.')
-		else:
-			self.potentials.append(V)
-
-	def __basis_function_factory__(self, n, dir, use_sympy=False):
+	def __basis_function_factory__(self, n:int, dir:int, use_sympy=False):
+		"""
+		The function __basis_function_factory__ returns a basis function of the particle in an a box based on the given parameters.
+		
+		:param n: The parameter `n` represents the index of the basis function. It determines the number of
+		oscillations in the function
+		:type n: int
+		:param dir: The parameter "dir" is an integer that represents the direction of the basis function.
+		It is used to determine which dimension of the domain to consider when calculating the basis
+		function. The value of "dir" should be 0, 1, or 2, corresponding to the x, y, and z directions
+		:type dir: int
+		:param use_sympy: The parameter "use_sympy" is a boolean flag that determines whether the code
+		should use the SymPy library for mathematical operations or the NumPy library. If "use_sympy" is
+		set to True, the code will import the SymPy library and use its functions for mathematical
+		operations, defaults to False (optional).
+		:return: The function `basis_func` is being returned, which represents the basis function \psi_n(x) and takes scalars x in the range (-L_dir/2,L_dir/2)
+		"""
 		L_names = ['Lx', 'Ly', 'Lz']
 
 		L = getattr(self.domain, L_names[dir])
@@ -153,19 +142,50 @@ class BoxEFM(EnvelopeFunctionModel):
 
 		return basis_func
 
-	def __compute_potential_matrix__(self, sparse=True):
+	@auto_update
+	def potential_matrix(self, sparse=True):
 		"""
-		Computes the matrix representation of the potentials
+		Computes the matrix representation of the all potential functions, i.e. all the parameters of the band_model that have `(x)` in their name:
 		:param bool sparse: whether the return value should be dense or not
 		:return:
 		"""
-		import sympy
 		V_mat = np.zeros(
 			(self.n_modes[0], self.n_modes[0], self.n_modes[1], self.n_modes[1], self.n_modes[2], self.n_modes[2]),
 			dtype='complex')
 		# add the analytical potentials:
-		V_mat += sum(self.potential_constructions)
+		for sym,func in ((s,v) for s,v in self.band_model.independent_vars['parameter_dict'].items() if s.name[-3:] == '(x)'):
+			# check the the potential function is a sympy expression and if so, if it is of one of the easier forms.
+			try:
+				symbolic = func(*self.band_model.position_symbols)
+			except Exception:
+				symbolic = None
+    
+			if symbolic is None:
+				# we have to integrate numerically.
+				raise NotImplementedError('todo: Numerical integration using scipy')
+			else:
+				# try to see if the function is analytically computable:
+				# check order of the dict.
+				from sympy.polytools import degree_list
+				
+				symbolic = sympy.sympify(symbolic).expand()
+				terms = symbolic.args if isinstance(symbolic,sympy.core.add.Add) else (symbolic,)
+				function_coeffients = {}
+				for term in terms: 
+					try:
+						orders = degree_list(term,self.band_model.position_symbols)
+					except TypeError as e:
+						continue 
+					arr = function_coefficients.get(sum(orders),np.zeros(self.tensor_shape+(self.spatial_dim,)*(sum(orders)),'O'))
+					# k-s commute, and by convention we will always order them as k_x k_x ... k_x k_y k_y ... k_y k_z k_z ... k_z
+					arr_i = np.unravel_index(i,self.tensor_shape)+(0,)*orders[0]+(1,)*orders[1]+(2,)*orders[2]
+					addition =   sympy.lambdify(commuting_momentum_symbols,term)(1,1,1) if any(orders) else term # this could give an error if ks and functions V(x) are mixed!
+					arr[arr_i] += addition
 
+					# add coefficient to array
+					disassemble_dict[sum(orders)] = arr
+			
+	    
 		box_dims = [getattr(self.domain, l) for l in ['Lx', 'Ly', 'Lz']]
 		var = tuple(sympy.symbols('x,y,z'))
 
@@ -304,6 +324,7 @@ class BoxEFM(EnvelopeFunctionModel):
 	def __eigen_tensor_shape__(self):
 		return list(self.band_model.tensor_shape[::2]) + list(self.n_modes)
 
+	@auto_update
 	def assemble_array(self, sparse=False):
 		"""
 		Assemble a (sparse) array to be used to solve the model
@@ -399,5 +420,95 @@ def __k_mat__(order, L, n_modes):
 		P = np.fromfunction(k_mel, (n_modes, n_modes))
 
 		return P
-
 	return p_mat(order)
+
+def split_up_multivariate_polynomial(poly:sympy.polys.Poly,symbols:Iterable):
+	"""
+	The function `split_up_multivariate_polynomial` takes a multivariate polynomial and a list of
+	symbols as input, and returns a list of tuples representing the polynomial split into its individual
+	terms.
+	
+	:param poly: The `poly` parameter is a multivariate polynomial represented as a `sympy.polys.Poly`
+	object. This object contains the polynomial expression.
+	:type poly: sympy.polys.Poly
+	:param symbols: The `symbols` parameter is an iterable containing the symbols that appear in the
+	multivariate polynomial. These symbols represent the variables in the polynomial. All symbols in poly that are not in `symbols` are treated as constants.
+	:type symbols: Iterable
+	:return: a list of tuples, where each tuple represents a term in the multivariate polynomial. Each
+	tuple contains two elements: the first element is a tuple representing the orders of the variables
+	in the term, and the second element is the coefficient of the term (a constant wrt the variables in `symbols`).
+	"""
+ 	from sympy import polys
+
+    exprs = ((tuple(),poly),) # each element is a term in the polynomial represented by tuple containin tuple of orders and the coefficient. orders are ordered according to ordering of symbols. 
+    symbols_list = list(symbols)
+    while len(symbols_list):
+        sym = symbols_list.pop(0)
+        new_exprs = []
+        for expr in exprs:
+            if expr[1].is_constant(sym):
+                new_exprs.append((expr[0]+(0,),expr[1]))
+                continue 
+            # treat all the expressions in expres as univariate polynomial in sym (and all other symbols as constants)
+            univariate_expr = polys.Poly(expr[1],sym)#domain=domain)
+            new_exprs.extend(((expr[0]+t[0],t[1]) for t in univariate_expr.all_terms()))
+        exprs = new_exprs
+        
+    return [ e for e in exprs if e[1]!=0]
+
+
+
+
+
+def box_mode_projection(array,directions,functions_dict,Nmodes,):
+    
+    
+	# projects a band_model down to a basis of box-modes for the specified directions. Functions which are specifed in the functions dict are also altered and returned as a new dict of the projected functions
+	
+	
+	
+	"""
+	
+		functions_dict = {}
+	else:
+		pass
+
+	for_numerical_eval = {}
+	bipartition_types = {}
+	polynomial_types = {}
+	for sym,func in functions_dict.items():
+		
+		# check that functions are either Bipartition (and constant on the partitions) or polynomial.
+		# evaluate everything else numerically and store 
+		if isinstance(func,sympy.sympy.Piecewise):
+			for arg in func.args:
+				for s in (s for s in arg.free_symbols if s in position_symbols):
+					if arg[1] in ((s>0),(s>=0)):
+						direction = s
+						coefficient  = arg[0]
+						break
+			else:
+				for_numerical_eval[sym] = func # this piecewise did not have the correct shape
+
+			if (func/coefficient).simplify() != sympy.sympy.Piecewise((1,direction>0),(0,True)):
+				for numerical_eval[sym] = func # this piecewise did not have the correct shape
+
+			else:
+				
+				
+	return 
+
+	# find all functions and make the position_dependence_explicit
+	# for the functions where this is not possible, do it numerically -> this will give an array.
+	# replace position symbols with the corresponding matrix
+	
+	# split up into dict dependening on degree of x,y,z (or arbitrary position syms)
+	# use (None,None,NOne) for the ones where it isnt possible
+	# evalue imposible numericcaly.
+	# combine array.
+	
+def evaluate_numerically(func,position_symbol,N_modes):
+	# COmpute matrix expresion of a function numerically ()
+	return 
+
+"""

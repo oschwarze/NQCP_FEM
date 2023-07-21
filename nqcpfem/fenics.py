@@ -54,10 +54,6 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         
         super().__init__(**independent_vars)
         
-    @property
-    def band_model(self):
-        return self.independent_vars['band_model']
-
     def __getstate__(self):
         state = super(FEniCsModel, self).__getstate__()
         state['__S_matrix'] = None
@@ -220,44 +216,60 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         return np.real(np.max(max_vals))#.astype(np.float64) # this number should never be complex
 
     @auto_update
+    def converted_functions(self):
+
+        
+        from functools import partial
+        converted_funcs = {}
+        scalar_function_space = self.__make_function_space__(self.mesh(),self.independent_vars['function_class'],1) # interpolate the scalar functions as the same class as the trial and test functions
+        from typing import Callable
+        fem_x = ufl.SpatialCoordinate(self.mesh())
+        variables =  self.dolfinx_constants().copy()
+        pos_syms = self.band_model.position_symbols
+        variables.update({pos_syms[i]:fem_x[i] for i in range(self.band_model.spatial_dim)}) # type: ignore
+        constants = self.dolfinx_constants()
+        for sym,func in self.band_model.independent_vars['functions'].items():
+            # convert the functions if they are sympy expresseions. If they are callable, we just use the spatial coordinate of dolfinx
+            if isinstance(func,sympy.Piecewise):
+                # we have to traverse through any sympy piecewise functions and convert them, since UFL stuff cannot handle regular comparison operators. 
+                # NB! There should'nt be any free symbols other than those contained in parameter_dict and constants as wells as x,y, and z in the piecewise expression.
+                # this is done becuase UFL types and sympy types DO NOT MIX and UFL types use special relation operators. 
+                converted_piecewise = convert_piecewise(func,__ufl_relations__,variables =variables)
+                converted_funcs[sym] = converted_piecewise
+            else:
+                if not isinstance(func,Callable):
+                    #cast as function using lambdify. We create it as a partiel because sympy symbols and dolfinx constants don't play nice together
+                    full_func = sympy.lambdify(tuple(constants.keys())+self.band_model.position_symbols,func)
+                    func = partial(full_func,constants.values())
+                
+                # other functions are interpolated in the usual way
+                f = dolfinx.fem.Function(scalar_function_space)
+                f.name = sym.name
+                
+                f.interpolate(func)
+                converted_funcs[sym] = f 
+        return converted_funcs   
+    
+    @auto_update
     def dolfinx_constants(self):
         """
         Constructs a dictionary mapping the free sympy symbols of the post-processed array to dolfinx constanps
         """
         band_model = self.independent_vars['band_model']
-        free_syms = tuple( s for s in band_model.post_processed_array().free_symbols if s not in band_model.momentum_symbols + band_model.position_symbols)
+        free_syms = tuple( s for s in band_model.post_processed_array().free_symbols if (s not in band_model.momentum_symbols + band_model.position_symbols) and (s.name[-3:] != '(x)')) # functions and special variables are excluded as they do not need casting as dolfinx constants
         
-        pos_syms= sympy.symbols('x,y,z')
         
         # parameter dict with all the symbols to assing and the corresponding 
-        new_param_dict =  {s:dolfinx.fem.Constant(self.function_space(), np.complex128(1)) for s in free_syms}
+        new_param_dict =  {s:dolfinx.fem.Constant(self.function_space(), np.complex128(1)) for s in free_syms} #type: ignore
         
-        fem_x = ufl.SpatialCoordinate(self.mesh())
 
-        scalar_function_space = self.__make_function_space__(self.mesh(),self.independent_vars['function_class'],1) # interpolate the scalar functions as the same class as the trial and test functions
-        for sym,func in new_param_dict.items():
-            if sym.name[-3:] == '(x)':
-                
-                if isinstance(func,sympy.Piecewise):
-                    # we have to traverse through any sympy piecewise functions and convert them, since UFL stuff cannot handle regular comparison operators. 
-                    # NB! There should'nt be any free symbols other than those contained in parameter_dict and constants as wells as x,y, and z in the piecewise expression.
-                    # this is done becuase UFL types and sympy types DO NOT MIX and UFL types use special relation operators. 
-
-                    converted_piecewise = convert_piecewise(func,__ufl_relations__,variables = new_param_dict)
-                    new_param_dict[sym] = converted_piecewise
-                
-                else:
-                    # other functions are interpolated in the usual way
-                    f = dolfinx.fem.Function(scalar_function_space)
-                    f.name = sym.name
-                    f.interpolate(func)
-                    new_param_dict[sym] = f 
-        
-        new_param_dict.update({pos_syms[i]:fem_x[i]*self.length_scale() for i in range(self.band_model.spatial_dim)}) 
         
         new_param_dict['__energy_scale__'] = dolfinx.fem.Constant(self.function_space(),np.complex128(1)) # add the energy scale as a constant as well since it depends on the parameter_dict and we want the ufl_form to be independent of the parameter_dict
         if sympy.symbols(r'\hbar') in new_param_dict.keys():
             new_param_dict[sympy.symbols(r'hbar')] = new_param_dict[sympy.symbols(r'\hbar')]
+            
+        fem_x = ufl.SpatialCoordinate(self.mesh())
+        new_param_dict.update({band_model.position_symbols[i]:fem_x[i] for i in range(band_model.spatial_dim)})
         return new_param_dict
     @auto_update
     def ufl_form(self):
@@ -290,6 +302,10 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
             numerical_tensor = sympy.lambdify(new_param_dict.keys(),tensor,dummify=True)(*new_param_dict.values())
             scaling = new_param_dict['__energy_scale__']*np.complex128(self.length_scale()**rank)
             normalized_tensor = np.asarray(np.asarray(numerical_tensor)/scaling)#.astype(np.complex128)
+            
+            
+            # (IF shape requires it) rollaxis (two places )of the tensor so that the first index corresponds to the right-most derivative coefficient!
+            
             if all(i == 0 for i in normalized_tensor.ravel()):
                 continue # drop all zero tensors as they will throw an error.
             

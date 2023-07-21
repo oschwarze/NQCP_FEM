@@ -2,7 +2,24 @@ from abc import ABC,abstractmethod
 from dataclasses import dataclass
 from .band_model import BandModel
 from .updatable_object import UpdatableObject,auto_update
+class Domain():
+    def __post_init__(self):
+        self.mesh = None
+        self.__mesh_scale__ = None
 
+    def bounded_scale(self):
+        """
+        returns a measure of how far away from 0,0 the boundary of the domain is
+        :return:
+        """
+        raise NotImplementedError
+
+    @property
+    def mesh_scale(self):
+        if self.__mesh_scale__ is None:
+            self.__mesh_scale__ = 1
+        return self.__mesh_scale__
+    
 class EnvelopeFunctionModel(UpdatableObject,ABC):
     def __init__(self, band_model:BandModel,domain,**independent_vars):
         """
@@ -16,6 +33,14 @@ class EnvelopeFunctionModel(UpdatableObject,ABC):
         independent_vars['domain'] = domain
         super(EnvelopeFunctionModel, self).__init__(**independent_vars)
         
+    @property
+    def band_model(self)->BandModel:
+        return self.independent_vars['band_model']
+
+    @property
+    def domain(self)->Domain:
+        return self.independent_vars['domain']
+
         
     @abstractmethod
     @auto_update
@@ -76,23 +101,7 @@ class EnvelopeFunctionModel(UpdatableObject,ABC):
         """
         return 1
     
-class Domain():
-    def __post_init__(self):
-        self.mesh = None
-        self.__mesh_scale__ = None
 
-    def bounded_scale(self):
-        """
-        returns a measure of how far away from 0,0 the boundary of the domain is
-        :return:
-        """
-        raise NotImplementedError
-
-    @property
-    def mesh_scale(self):
-        if self.__mesh_scale__ is None:
-            self.__mesh_scale__ = 1
-        return self.__mesh_scale__
 @dataclass()
 class RectangleDomain(Domain):
     Lx: float

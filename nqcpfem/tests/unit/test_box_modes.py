@@ -48,7 +48,7 @@ class TestBoxEFM(TestCase):
 		evals, evecs = np.linalg.eigh(A)
 
 		# region plotting the solutions
-		""" 
+		""" #
 		from matplotlib import pyplot as plt
 		for i in range(len(evals)):
 			print(i,evals[i])
@@ -63,7 +63,7 @@ class TestBoxEFM(TestCase):
 		"""
 		# endregion
 
-		self.fail(msg='fix 2D models not getting corect potential shapes!')
+		self.fail(msg='fix 2D models not getting correct potential shapes!')
 
 
 		# region evaluating
