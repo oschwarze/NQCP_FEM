@@ -69,7 +69,7 @@ class TestSymbolic(TestCase):
         facit_V = sympy.symbols('F_{(x)}(x)',commutative=False)
         comm = commutator_map(Kx)
         self.assertEqual(comm(a*X),a)
-        self.assertEqual(comm(a*X**2),2*a)
+        self.assertEqual(comm(a*X**2),2*a*X)
         self.assertEqual(comm(V),facit_V)
         self.assertEqual(comm(a*V),a*facit_V)
         self.assertEqual(comm(2*V),2*facit_V)
@@ -77,4 +77,84 @@ class TestSymbolic(TestCase):
         self.assertEqual(comm(sympy.conjugate(a*V)),sympy.conjugate(a*facit_V))
 
     def test_permute_factors(self):
-        self.fail()
+        from nqcpfem.symbolic import permute_factors,Kx,Ky,Kz,X,Y,Z
+        term = [X,Y,Z,Kx,Ky,Kz]
+        self.assertEqual(permute_factors(term,5,0),[[Kz,X,Y,Z,Kx,Ky],[X,Y,-1,Kx,Ky]])
+
+        V=sympy.symbols('F(x)',commutative=False)
+        facit_V = sympy.symbols('F_{(x)}(x)',commutative=False)
+        term = [X,Y,V,Kx,Ky,Kz]
+        self.assertEqual(permute_factors(term,3,0),[[Kx,X,Y,V,Ky,Kz],[X,Y,-facit_V,Ky,Kz],[-1,Y,V,Ky,Kz]])
+
+        
+        term = [Kx,X**2,Y,V,Ky,Kz]
+        self.assertEqual(permute_factors(term,0,5),[[X**2,Y,V,Ky,Kz,Kx],[2*X,Y,V,Ky,Kz],[X**2,Y,facit_V,Ky,Kz]])
+
+    def test_arange_ks(self):
+        from nqcpfem.symbolic import arange_ks,Kx,Ky,Kz,X,Y,Z
+        
+        V=sympy.symbols('F(x)',commutative=False)
+        Vx=sympy.symbols('F_{(x)}(x)',commutative=False)
+        Vy=sympy.symbols('F_{(y)}(x)',commutative=False)
+        Vz=sympy.symbols('F_{(z)}(x)',commutative=False)
+        Vyz=sympy.symbols('F_{(yz)}(x)',commutative=False)
+        term = [X,Kx,Y**2,V,Kz,Ky]
+        target = [True,True,True,False,False,False]
+        result = arange_ks(term,target_signature=target,signature_reduction_direction='left')
+        facit = [[Kz,Ky,Kx,X,Y**2,V],
+                [Kz,Kx,X,-2*Y,V],
+                [Kz,Kx,X,Y**2,-Vy],
+                [Ky,Kx,X,Y**2,-Vz],
+                [Kx,X,-2*Y,-Vz],
+                [Kx,X,Y**2,Vyz], # plus sign in front of Vyz because two - signs
+                [Kz,Ky,-1,Y**2,V],
+                [Kz,-1,-2*Y,V],
+                [Kz,-1,Y**2,-Vy],
+                [Ky,-1,Y**2,-Vz],
+                [-1,-2*Y,-Vz],
+                [-1,Y**2,Vyz],
+                ]
+        self.assertEqual(len(facit),len(result))
+        for f in facit:
+            self.assertIn(f,result)
+    
+    def test_arange_k_array(self):
+        
+        from nqcpfem.symbolic import arange_ks_array,Kx,Ky,Kz,X,Y,Z
+        V=sympy.symbols('F(x)',commutative=False)
+        Vx=sympy.symbols('F_{(x)}(x)',commutative=False)
+        Vy=sympy.symbols('F_{(y)}(x)',commutative=False)
+        Vz=sympy.symbols('F_{(z)}(x)',commutative=False)
+        Vyz=sympy.symbols('F_{(yz)}(x)',commutative=False)
+        term_00 = X*Kx*Y**2*V*Kz*Ky
+        facit_00 = sum((sympy.Mul(*f) for f in [[Kz,Ky,Kx,X,Y**2,V],
+                [Kz,Kx,X,-2*Y,V],
+                [Kz,Kx,X,Y**2,-Vy],
+                [Ky,Kx,X,Y**2,-Vz],
+                [Kx,X,-2*Y,-Vz],
+                [Kx,X,Y**2,Vyz], # plus sign in front of Vyz because two - signs
+                [Kz,Ky,-1,Y**2,V],
+                [Kz,-1,-2*Y,V],
+                [Kz,-1,Y**2,-Vy],
+                [Ky,-1,Y**2,-Vz],
+                [-1,-2*Y,-Vz],
+                [-1,Y**2,Vyz],
+                ]),sympy.sympify(0))
+        
+        term_01 = V*Kx + V*Ky
+        facit_01 = sum((sympy.Mul(*f) for f in [[Kx,V],[-Vx]]),sympy.sympify(0))+ sum((sympy.Mul(*f) for f in [[Ky,V],[-Vy]]),sympy.sympify(0))
+        
+        term_10 = V*Y**2*Ky
+        facit_10 = sum((sympy.Mul(*f) for f in [[Ky,V,Y**2],[-Vy,Y**2],[V,-2*Y]]),sympy.sympify(0))
+        
+        
+        term_11 = X**3*Kx*Kx
+        facit_11 = sum((sympy.Mul(*f) for f in [[Kx,Kx,X**3],[Kx,-3*X**2],[Kx,-3*X**2],[6*X]]),sympy.sympify(0))
+        array = sympy.Array([[term_00,term_01],[term_10,term_11]])
+        
+        result = arange_ks_array(array,'all left','left')
+        facit_array = sympy.Array([[facit_00,facit_01],[facit_10,facit_11]])
+
+        
+        
+        self.assertEqual(result,facit_array)
