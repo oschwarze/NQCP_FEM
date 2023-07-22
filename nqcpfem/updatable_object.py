@@ -402,7 +402,6 @@ def auto_update(computation_method):
                 if substitute_flags:
                     # another dependency check is active so we have to temporarily overwrite the flags
                     current_flags = self.get_current_dependency_flags()
-                    print(current_flags)
                 else:
                     self._dependency_check_active_ = True 
 
@@ -411,7 +410,6 @@ def auto_update(computation_method):
 
                 res = computation_method(self,*args,**kwargs)
                 dependencies = self.snapshot_used_dependencies()
-                print(len(dependencies))
                 computed_attr = ComputedAttribute(res,dependencies)
                 setattr(self,attr_to_update,computed_attr)
                     
@@ -419,13 +417,8 @@ def auto_update(computation_method):
                     # revert the flags back
                     
                     # Or the flags together since if B uses A and A depends on C then B depends on C
-                    print('pre Update')
-                    print(self.get_current_dependency_flags())
-                    print(current_flags)
                     
                     self.raise_dependency_flags(current_flags)
-                    print('post')
-                    print(self.get_current_dependency_flags())
                     # do not alter dependency check status!
                 else:
                     self._dependency_check_active_ = False
@@ -449,22 +442,5 @@ def auto_update(computation_method):
 if __name__ == '__main__':
     test = Example(100,2,3)
     
-    print(test.independent_vars['a'])
-    print(test.independent_vars.get_stored_attribute('a')._modified_time_)
     test.independent_vars['a'] += 1  
-    print(test.independent_vars.get_stored_attribute('a')._modified_time_)
-    print('V')
-    print(test.independent_vars['b'])
-    print(test.make_A())
-    print(test._saved_A.dependencies['a'].attribute.value)
-    print(test.make_B())
-    print(test._saved_B.dependencies['a'].attribute.value)
     test.independent_vars['a'] = 200
-    print(test.independent_vars['a'])
-    print(test.independent_vars.get_stored_attribute('a')._modified_time_)
-    print(test.make_A())
-    print(test.make_B())
-    print('HERE')
-    print(test._saved_A.dependencies['a'].attribute._modified_time_)
-    print(test._saved_A.dependencies['a'].snapshot_time)
-    #TIMES NOT UPDATED

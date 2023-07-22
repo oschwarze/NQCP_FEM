@@ -49,7 +49,7 @@ def derivative_of_function(symbol,pos_sym):
     if isinstance(symbol,sympy.Mul):
         post_mul = symbol.args[0]
         # chekc the the post_mul is constant:
-        if any((a.name[-3:] == '(x)' or a in (Kx,Ky,Kz,X,Y,Z)) for a in post_mul.atoms()):
+        if any((a.name[-3:] == '(x)' or a in (Kx,Ky,Kz,X,Y,Z)) for a in post_mul.atoms() if isinstance(a,sympy.Symbol)):
             raise TypeError(f'function symbol was not symbol, symbol times constant or complex conjugate of symbol: {symbol}')
         symbol = symbol.args[1]
     else:
@@ -100,18 +100,11 @@ def commutator_map(k):
     """
     conjugate_var = X if k == Kx else (Y if k == Ky else Z)
     def commutator(x):
-        if isinstance(x,sympy.Mul):
-            assert(x.args[0] == -1)
-            x = x.args[1]
-        if isinstance(x,sympy.Symbol) and x.name[-3:] == '(x)':
-            return sympy.symbols(derivative_of_function(x,conjugate_var),commutative=False)
-        
-        elif isinstance(x,sympy.Pow) and conjugate_var in x.free_symbols:
-            return sympy.diff(x,conjugate_var)
-        elif x == conjugate_var:
-            return sympy.sympify(1)
+        x=sympy.sympify(x)
+        if any(a.name[-3:] == '(x)' for a in x.atoms() if isinstance(a,sympy.Symbol)):
+            return derivative_of_function(x,conjugate_var)
         else:
-            return 0
+            return sympy.diff(x,conjugate_var)
     return commutator
     
 def permute_factors(term,start_i,end_i):
@@ -134,7 +127,7 @@ def permute_factors(term,start_i,end_i):
         term = new_term
         current_i = current_i + direction
     
-    return term,additional_terms
+    return [term] + additional_terms
 
 def arange_ks(term,target_signature,signature_reduction_direction='left'):
     #print(term,target_signature,symbols)
@@ -146,8 +139,9 @@ def arange_ks(term,target_signature,signature_reduction_direction='left'):
         # take the index of the first -1 you see as the start put it into the first +1 you see:
         start_i = difference.index(-1)
         target_i = difference.index(1)
-        new_term,add_terms = permute_factors(term,start_i,target_i)
-        term = new_term
+        terms= permute_factors(term,start_i,target_i)
+        term = terms[0] # First term is always the one with highest K-order
+        add_terms = terms[1:]
         # perform recursion to get the remaining expressions into the right target signature (just remove the target_i's True)
         additional_target_signature = target_signature.copy()
         
@@ -157,9 +151,10 @@ def arange_ks(term,target_signature,signature_reduction_direction='left'):
             additional_target_signature.reverse()
             additional_target_signature.remove(1)
             additional_target_signature.reverse()
-        additional_terms.extend([arange_ks(a,additional_target_signature) for a in add_terms])
+        for t in add_terms:
+            additional_terms.extend(arange_ks(t,additional_target_signature))
         current_signature = [not t.is_constant(Kx,Ky,Kz) for t in term]
-    return [term,additional_terms]
+    return [term] + additional_terms
 
 def construct_target_signature(term,signature_type):
     """
@@ -205,13 +200,17 @@ def arange_ks_array(array,signature_type,signature_reduction_direction='left'):
             val = sympy.sympify(val).expand()
             terms = val.args if isinstance(val,sympy.core.add.Add) else (val,)
             
-            res = sympy.sympify(0)
-            for t in terms:
-                res = res + rearanger(t)
-        
+
+            # sum over term in terms: sum over terms that compe from permuting. Mul is to get single expression from list of factors
+            res = sympy.Add(*(sympy.Add(*( sympy.Mul(*tt) for tt in rearanger(expand_term(t)))) for t in terms))
+            
+            
             rearanged_elements.append(res)
-    
-    arranged_array=sympy.Array(rearanged_elements).reshape(array.shape)
+    for f in rearanged_elements:
+        print(f)
+        print(type(f))
+        
+    arranged_array=sympy.Array(rearanged_elements).reshape(*array.shape)
     return arranged_array
             
 def extract_k_independent_part(term):
