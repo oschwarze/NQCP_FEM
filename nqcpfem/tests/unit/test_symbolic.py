@@ -76,4 +76,5 @@ class TestSymbolic(TestCase):
         self.assertEqual(comm(sympy.conjugate(V)),sympy.conjugate(facit_V))
         self.assertEqual(comm(sympy.conjugate(a*V)),sympy.conjugate(a*facit_V))
 
-    def 
+    def test_permute_factors(self):
+        self.fail()
