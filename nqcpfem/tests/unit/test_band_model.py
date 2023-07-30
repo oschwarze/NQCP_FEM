@@ -31,6 +31,7 @@ class TestBandModel(TestCase):
     def setUp(self) -> None:
 
         from nqcpfem.band_model import BandModel,__MOMENTUM_NAMES__,__POSITION_NAMES__
+        from nqcpfem.functions import NumericalFunction,SymbolicFunction
         x,y,z = sympy.symbols(__POSITION_NAMES__)
         kx,ky,kz = sympy.symbols(__MOMENTUM_NAMES__,commutative=False)
         self.constants = sympy.symbols('a,b,c')
@@ -38,10 +39,11 @@ class TestBandModel(TestCase):
         from unittest.mock import MagicMock
         self.mockV = MagicMock(side_effect =lambda x,y,z: 2*x )
         del self.mockV._modified_time_
-        V1,V2,V3 = sympy.symbols('V1(x),V2(x),V3(x)')
-        Vval1 = self.mockV
-        Vval2 = x**2 + a*y**2 +c*z**2
-        Vval3 = sympy.Piecewise((x,x>0),(0,True))
+        V1,V2,V3 = sympy.symbols('V1(x),V2(x),V3(x)',commutative=False)
+        Vval1 = NumericalFunction(self.mockV,'V1(x)',[0,1,2])
+        Vval2 = SymbolicFunction(x**2 + a*y**2 +c*z**2,'V2(x)')
+        Vval3 = SymbolicFunction(sympy.Piecewise((1,x>0),(0,True)),'V3(x)')
+        
         self.funcs = ((V1,Vval1),(V2,Vval2),(V3,Vval3))
         
         self.scalar_A= sympy.Array([[a*kx**2+ky**2+kz**2+b*kx+kx*ky+(c+1)*kz*ky-ky*kz+V1+V2+V3]])
@@ -69,7 +71,7 @@ class TestBandModel(TestCase):
         self.tensor_problem.independent_vars['parameter_dict'][b] = 2
         self.tensor_problem.independent_vars['parameter_dict'][c] = 3.14
         self.tensor_problem.independent_vars['function_dict'].update({v[0]:v[1] for v in self.funcs})
-        self.tensor_problem.independent_vars['function_dict'][self.funcs[0][0]] = partial(self.funcs[0][1],z=0)
+        self.tensor_problem.independent_vars['function_dict'][self.funcs[0][0]] = self.funcs[0][1]
         
         
     def test_tensor_shape(self):
@@ -93,14 +95,15 @@ class TestBandModel(TestCase):
             scalar_r2[:,:,1,1] = 1 
             scalar_r2[:,:,2,2] = 1 
             scalar_r2[:,:,0,1] = 1 
-            scalar_r2[:,:,1,2] = 1*self.tensor_problem.independent_vars['parameter_dict'][c]
+            scalar_r2[:,:,2,1] = 1*self.tensor_problem.independent_vars['parameter_dict'][c]+1
+            scalar_r2[:,:,1,2] = -1
             result = self.scalar_problem.numerical_tensor_repr()
+            print(result)
             self.assertEqual(len(result.keys()),3,msg=f'result keys: {tuple(result.keys())}')
             self.assertTrue(all(i in result.keys() for i in [1,2]))
             testing.assert_array_equal(scalar_r1,result[1])
-            testing.assert_array_equal(scalar_r2,result[2])
-            self.mockV.assert_called()
-            self.mockV.reset_mock()
+            testing.assert_array_almost_equal(scalar_r2,result[2],decimal=10)
+            self.mockV.assert_not_called()
             result = self.scalar_problem.numerical_tensor_repr()
             
             
@@ -118,12 +121,12 @@ class TestBandModel(TestCase):
             self.assertTrue(all(i in result.keys() for i in [2,3]))
             testing.assert_array_equal(spinor_r2,result[2])
             testing.assert_array_equal(spinor_r3,result[3])
-            self.mockV.assert_called()
+            self.mockV.assert_not_called()
             self.mockV.reset_mock()
             
             x = sympy.symbols('x')
             tensor_r0 = np.zeros((2,2,2,2),dtype='O')
-            tensor_r0[0,0,0,0] = self.funcs[0][1](*(x,0,0))+self.funcs[1][1].subs({s:v for s,v in zip(self.constants,(1,2,3.14))}) + self.funcs[2][1]
+            tensor_r0[0,0,0,0] = self.funcs[0][1].symbol+self.funcs[1][1].expression.subs({s:v for s,v in zip(self.constants,(1,2,3.14))}) + self.funcs[2][1].expression
             tensor_r0[0,1,0,0] = 1
             tensor_r0[1,1,0,1] = self.tensor_problem.independent_vars['parameter_dict'][a]
             tensor_r0[1,1,1,0] = 1
@@ -146,7 +149,7 @@ class TestBandModel(TestCase):
             self.assertTrue(all(i in result.keys() for i in [0,2]))
             testing.assert_array_equal(tensor_r0,result[0])
             testing.assert_array_equal(tensor_r2,result[2])
-            self.mockV.assert_called()
+            self.mockV.assert_not_called()
             self.mockV.reset_mock()
             
             
@@ -154,11 +157,11 @@ class TestBandModel(TestCase):
             symbolic_res = self.tensor_problem.symbolic_tensor_repr()
             self.assertTrue(all(s in sympy.Array(symbolic_res[2]).free_symbols for s in (a,b,c)))
             subs_dict = {a:1,b:2,c:3.14}
-            subs_dict.update({v[0]:v[1] for v in self.funcs})
-            subs_dict[self.funcs[0][0]] = self.funcs[0][1](*(x,0,0))
+            subs_dict.update({self.funcs[0][0]:self.funcs[0][0],self.funcs[1][0]:self.funcs[1][1].expression,self.funcs[2][0]:self.funcs[2][1].expression})
+            #subs_dict[self.funcs[0][0]] = self.funcs[0][1].expression)
+            V1,V2,V3 = sympy.symbols('V1(x),V2(x),V3(x)',commutative=False)
             testing.assert_array_equal(tensor_r0,np.array(sympy.Array(symbolic_res[0]).subs(subs_dict)))
             testing.assert_array_equal(tensor_r2,np.array(sympy.Array(symbolic_res[2]).subs(subs_dict)))
-            
             
             
     def test_make_numerical(self):
@@ -172,10 +175,10 @@ class TestBandModel(TestCase):
         result = self.scalar_problem.numerical_array()
         A_subs = {a:1,b:2,c:3.14}
         
-        A_subs.update({v[0]:v[1] for v in self.funcs})
+        A_subs.update({v[0]:v[1].expression for v in self.funcs[1:]})
         x = sympy.symbols('x')
-        A_subs[self.funcs[0][0]] = self.funcs[0][1](*(x,0,0))
-        A_subs.update({sympy.symbols(k,commutative=False):sympy.symbols(k) for k in __MOMENTUM_NAMES__})
+        #A_subs[self.funcs[0][0]] = self.funcs[0][1](*(x,0,0))
+        #A_subs.update({sympy.symbols(k,commutative=False):sympy.symbols(k) for k in __MOMENTUM_NAMES__})
         testing.assert_array_equal(result,np.array(self.scalar_A.subs(A_subs)))
         
         result = self.spinor_problem.numerical_array()
@@ -366,7 +369,7 @@ class TestBandModel(TestCase):
         subs_dict = {a:1,b:2,c:3.14}
         subs_dict.update({Ks[i]:k_vec[i] for i in range(3)})
         x,y,z = sympy.symbols('x,y,z')
-        subs_dict.update({v[0]:v[1] for v in self.funcs})
+        subs_dict.update({v[0]:v[1].expression.subs({'x':x,'y':y,'z':z}) for v in self.funcs[1:]})
         subs_dict[self.funcs[0][0]] = self.funcs[0][1](*(x,y,z))
         subs_dict.update({s:v for s,v in zip((x,y,z),position)})
         facit = sorted((self.spinor_A_00_element.subs(subs_dict), self.spinor_A_11_element.subs(subs_dict)))
@@ -403,7 +406,7 @@ class TestBandModel(TestCase):
         subs_dict = {a:1,b:2,c:3.14}
         subs_dict.update({Ks[1]:0,Ks[2]:0}) 
         x,y,z = sympy.symbols('x,y,z')
-        subs_dict.update({v[0]:v[1] for v in self.funcs})
+        subs_dict.update({v[0]:v[1].expression for v in self.funcs[1:]})
         subs_dict[self.funcs[0][0]] = self.funcs[0][1](*(x,y,z))
         subs_dict.update({s:v for s,v in zip((x,y,z),position)})
         facit_0_func = sympy.lambdify(Ks[0],self.spinor_A_00_element.subs(subs_dict))
@@ -473,11 +476,16 @@ class TestBandModel(TestCase):
             H.add_potential(pot,{W:10},{W:15})
             
     def test_add_z_confinement(self):
+        self.scalar_problem.independent_vars['preprocessed_array'] = self.scalar_problem.independent_vars['preprocessed_array'].subs({sympy.symbols('V1(x)',commutative=False):0}) # ignore V1 for now until we have numerical integration in place
+        del self.scalar_problem.independent_vars['function_dict'][sympy.symbols('V1(x)',commutative=False)]
         self.scalar_problem.add_z_confinement(nz_modes=2,lz=0.1,z_confinement_type='box')
         self.assertTrue(self.scalar_problem.post_processed_array().shape== (1,1,2,2))
         self.assertTrue(all( s not in self.scalar_problem.post_processed_array().free_symbols for s in (sympy.symbols('k_{z}',commutative=False),sympy.symbols('z'))),msg='kz and/or z were not all replaced')
         V1,V2,V3 = [v[0] for v in self.funcs]
-        self.assertTrue(__compare_sympy_arrays__(self.scalar_problem.post_processed_array().subs({k:0 for k in self.scalar_problem.momentum_symbols}),sympy.Array([[[[sympy.pi**2/sympy.symbols('l_z')**2+V1+V2+V3,0],[0,4*sympy.pi**2/sympy.symbols('l_z')**2+V1+V2+V3]]]])))
+        res = self.scalar_problem.post_processed_array().subs({k:0 for k in self.scalar_problem.momentum_symbols})
+        V2s = sympy.Symbol('(V2)_1(x)',commutative=False)
+        facit = sympy.Array([[[[sympy.pi**2/sympy.symbols('l_z')**2+V2s+V3,0],[0,4*sympy.pi**2/sympy.symbols('l_z')**2+V2s+V3]]]])
+        self.assertTrue(__compare_sympy_arrays__(res,facit))
 
         
     def test_BdG_extension(self):
@@ -568,16 +576,17 @@ class TestBandModel(TestCase):
     
     
     def test_add_vector_field(self):
-        A_field = [1,0,0]
+
+        from nqcpfem import constants,values
+        hbar = constants['hbar']
+        A_field = [values[constants['hbar']],0,0]
         self.scalar_problem.add_vector_potential(A_field,charge=np.pi)
         H=self.scalar_problem.post_processed_array()
         kx,ky,kz = self.scalar_problem.momentum_symbols
-        ckx,cky,ckz = sympy.symbols('k_{x},k_{y},k_{z}',commutative=True)
+        ckx,cky,ckz = sympy.symbols('k_{x},k_{y},k_{z}',commutative=False)
         
         AA = self.scalar_A.copy()
         
-        from nqcpfem import constants,values
-        hbar = constants['hbar']
         e = sympy.symbols('q_{c}')
         import nqcpfem
         A_sym = sympy.symbols(nqcpfem.band_model.__VECTOR_FIELD_NAMES__)
@@ -585,17 +594,38 @@ class TestBandModel(TestCase):
         self.assertTrue(__compare_sympy_arrays__(H,facit),msg='scalar problem did not get correct substitution')
 
         H_num = self.scalar_problem.numerical_array()
-        hbar = values[constants['hbar']]
         e = np.pi
-    
-        facit_num= AA.copy().subs({kx:(ckx+e*A_field[0]/hbar), ky:(cky+e*A_field[1]/hbar), kz:(ckz+e*A_field[2]/hbar)}).subs({s:n for s,n in zip(self.constants,(1,2,3.14))})
-        self.assertTrue(__compare_sympy_arrays__(sympy.Array(H_num),facit_num),msg='scalar_problem did not have correct numerical evaluation')
+        hbar = values[constants['hbar']]
+        subs_dict = {s:n for s,n in zip(self.constants,(1,2,3.14))}
+        subs_dict.update({f[0]:f[1].expression for f in self.funcs[1:]})
+        facit_num= AA.copy().subs({kx:(ckx+e*A_field[0]/hbar), ky:(cky+e*A_field[1]/hbar), kz:(ckz+e*A_field[2]/hbar)}).subs(subs_dict)
+        diff = facit_num - sympy.Array(H_num)
+        diff = diff.subs({k:1 for k in (kx,ky,kz)})
+        np.testing.assert_allclose(np.array(diff).astype(float),np.zeros(diff.shape))
 
-        # ACTUALLY: FIGURE OUT HOW TO MOVE one K to the right and the other ks to the left using the same substitution as there.
-        # we can assume that A is the only problematic term. If we simplify and find the first k on the left the rest should be OK.
-        # make A also non-commutative when substituting and replace k_iA_j -> (A_j)_i + A_j k_i (moving k-s over to the right)         
-        self.fail('fix ordering of K')
+
         
+    def test_fix_position(self):
+        V1,V2,V3 = [f[0] for f in self.funcs]
+        x,y,z = self.spinor_problem.position_symbols
+        testarray = sympy.Array([[x,y,z,],[V1,V2,V3]])
+        rng_seed = np.random.default_rng().integers(0,1024)
+        rng = np.random.default_rng(rng_seed)
+        pos = rng.uniform(0,10,3)
+        res= self.spinor_problem.fix_position(testarray,*pos)
+        subs_dict = {f[0]:f[1](*(pos)) for f in self.funcs}
+        subs_dict.update({x:p for x,p in zip(self.spinor_problem.position_symbols,pos)})
+        self.assertEqual(res,testarray.subs(subs_dict),msg=f'seed = {rng_seed}. Single sympy array not fixed correctly')
+        
+        
+        test2 = sympy.Array([[V1*x+2,V2*y+3,V3*3],[x,y,z]])
+        test_dict = {0:testarray,'a':np.array(test2)}
+        facit_dict = {0:testarray.subs(subs_dict),'a':np.array(test2.subs(subs_dict))}
+        res = self.spinor_problem.fix_position(test_dict,*pos)
+        self.assertEqual(facit_dict[0],res[0],msg=f'seed = {rng_seed}. Dict of sympy array not fixed corectly')
+        self.assertTrue((facit_dict['a']==res['a']).all(),msg=f'seed = {rng_seed}. Dict of numpy array not fixed correctly')
+    
+    
 class TestFreeBoson(TestCase):
     def test_init(self):
         from nqcpfem.band_model import FreeBoson,__MOMENTUM_NAMES__
@@ -604,7 +634,7 @@ class TestFreeBoson(TestCase):
         self.assertTrue(instance.independent_vars['parameter_dict'][m]==1)
         self.assertTrue(instance.spatial_dim==3)
         kx,ky,kz = sympy.symbols(__MOMENTUM_NAMES__,commutative=False)
-        ckx,cky,ckz = sympy.symbols(__MOMENTUM_NAMES__,commutative=True)
+        ckx,cky,ckz = sympy.symbols(__MOMENTUM_NAMES__,commutative=False)
         from nqcpfem import constants,values
         self.assertTrue(instance.post_processed_array() == sympy.Array([[constants['hbar']**2/(2*m) *(kx**2+ky**2+kz**2)]]))
         
@@ -634,7 +664,7 @@ class testFreeFermion(TestCase):
         hbar = constants['hbar']
         mu_B = constants['mu_B']
         kx,ky,kz = sympy.symbols(__MOMENTUM_NAMES__,commutative=False)
-        ckx,cky,ckz = sympy.symbols(__MOMENTUM_NAMES__,commutative=True)
+        ckx,cky,ckz = sympy.symbols(__MOMENTUM_NAMES__,commutative=False)
 
         instance = FreeFermion(mass=2,spatial_dim=3)
         g_tensor = 3 

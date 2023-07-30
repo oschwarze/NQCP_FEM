@@ -6,11 +6,15 @@ from nqcpfem.symbolic import construct_target_signature, k_component_signature
 
 class TestSymbolic(TestCase):
     def test_expand_term(self):
-        from nqcpfem.symbolic import expand_term,Kx,Ky,Kz
+        from nqcpfem.symbolic import expand_term,Kx,Ky,Kz,X,Y,Z
         a,b,c = sympy.symbols('a,b,c')
         A = Kx**3*a*Ky*b
         res = expand_term(A)
         self.assertEqual((a,b,Kx,Kx,Kx,Ky),res)
+        
+        self.assertEqual(expand_term(Kx**2),(Kx,Kx))
+        
+        self.assertEqual(expand_term(sympy.symbols('F(x)',commutative=False)),(sympy.symbols('F(x)',commutative=False),))
         
     def test_derivative_of_function(self):
         
@@ -43,6 +47,44 @@ class TestSymbolic(TestCase):
         self.assertEqual(construct_target_signature(term,'all right'),[False,False,True,True,True,True])
         self.assertEqual(construct_target_signature(term,'FEM'),[True,True,True,False,False,True])
     
+    def test_extract_valid_biparition_part(self):
+        from nqcpfem.symbolic import X,Y,Z,extract_valid_bipartition_part
+        a,b,c = sympy.symbols('a,b,c')
+        X,Y,Z = sympy.symbols('x,y,z',commutative = True)
+        atoms =(sympy.Piecewise((1,X>0),(0,True)),
+                sympy.Piecewise((1,Y>0),(0,True)),
+                sympy.Piecewise((1,Z>0),(0,True)))
+        
+        term =sympy.Piecewise((a,X>0),(0,True))
+        self.assertEqual(extract_valid_bipartition_part(term),([sympy.Piecewise((1,X>0),(0,True))],a))
+        
+        term = sympy.Piecewise((a,X>0),(0,True))*sympy.Piecewise((b,Y>0),(0,True))
+        term = term.simplify()
+        res = extract_valid_bipartition_part(term)
+        self.assertEqual(res[1],a*b)
+        for r in res[0]:
+            self.assertIn(r,[atoms[0],atoms[1]])
+
+        
+        term = sympy.Piecewise((a,X>0),(0,True))*sympy.Piecewise((b*Y,Y>0),(0,True))
+        term = term.simplify()
+        res = extract_valid_bipartition_part(term)
+        
+        
+        self.assertEqual(extract_valid_bipartition_part(term),([atoms[0]],sympy.Piecewise((a*b*Y,Y>0),(0,True))))
+        
+        
+        term = sympy.Piecewise((a*Z,X>0),(0,True))*sympy.Piecewise((b*Y,Y>0),(0,True))
+        term = term.simplify()
+        self.assertEqual(extract_valid_bipartition_part(term),([atoms[0]],sympy.Piecewise((Z*a*b*Y,Y>0),(0,True))))
+        
+        term = sympy.Piecewise((a*Y,X>0),(0,True))*sympy.Piecewise((b*Y,Y>0),(0,True))*sympy.Piecewise((1,Z>0),(0,True))
+        term = term.simplify()
+        res = extract_valid_bipartition_part(term)
+        self.assertEqual(res[1],sympy.Piecewise((a*b*Y**2,Y>0),(0,True)))
+        for r in res[0]:
+            self.assertIn(r,[atoms[0],atoms[2]])
+            
     
     def test_k_component_signature(self):
         from nqcpfem.symbolic import Kx,Ky,Kz,k_component_signature

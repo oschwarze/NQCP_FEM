@@ -30,7 +30,8 @@ class TestBandModel(TestCase):
         
         np.testing.assert_allclose(facit_spectrum,result_spectrum[1])
         
-        
+    def test_k_FEM_reshuffle(self):
+        self.fail('TODO')
         
 class TestLuttingerKohnHamiltonian(TestCase):
     def test_crystal_rotation_and_spectrum(self):
