@@ -14,9 +14,11 @@ Naming conventions:
     - symbols ending in `(x)`: symbols representing functions of X,Y and or Z
 """
 
+from operator import index
 from typing import Iterable
 import sympy
 import numpy as np
+
 
 __MOMENTUM_NAMES__ = (r'k_{x}',r'k_{y}',r'k_{z}')
 __POSITION_NAMES__ = (r'x',r'y',r'z')
@@ -25,19 +27,31 @@ Kx,Ky,Kz = sympy.symbols(__MOMENTUM_NAMES__,commutative=False)
 X,Y,Z = sympy.symbols(__POSITION_NAMES__,commutative=False)
 
 
-def expand_term(term):
+def expand_term(term,split_pow=True):
     """Expand a term into a tuple of elements where the Ks are individual elements i.e. a term A*x*k_x**2 becomes (A,x,k_x,k_x)
 
     :param term: _description_
     :type term: _type_
     """
     split = []
+    if isinstance(term,(sympy.Symbol,sympy.Number)):
+        return (term,) # term is just a symbol so we cannot split it up
     if not isinstance(term,Iterable):
-        term = term.args
+        if isinstance(term,sympy.Mul):
+            term = term.args
+        elif isinstance(term,sympy.Pow):
+            term = (term,)
+        elif isinstance(term,sympy.Piecewise):
+            # splitting up piecewise sucks
+            #return (term,)
+            raise NotImplementedError()
+        else:
+            raise NotImplementedError(f"Didn't know how to split up term: {term} ({type(term)})")
+
     for t in term:
-        if isinstance(t,sympy.Pow) and not t.is_constant(Kx,Ky,Kz):
+        #print(t,isinstance(t,sympy.Pow)),#t.args[0] in (Kx,Ky,Kz))
+        if split_pow and ( isinstance(t,sympy.Pow) and t.args[0] not in (X,Y,Z)+(sympy.symbols('x,y,z'))):
             split.extend([t.args[0]]*t.args[1])
-            
         else:
             split.append(t)
     
@@ -234,29 +248,194 @@ def extract_k_independent_part(term):
 
     return middle
 
-def decompose_as_polynomial(expr):
-    """Takes an expression which does not contain Kx,Ky or Kz and decomposes it into a tuple describing 
-    each terms order wrt the variables X,Y,Z and all functions present and the constant coefficient in front.
-    This is usefull for when evaluating the position operators 
-
-    :param expr: expression to decompose. Must not contain Kx,Ky or Kz (since we require it to be commutative)
-    :type term: Any
+def sort_out_polynomials(expression,symbols):
     """
-    pass
+    The function `sort_out_polynomials` takes an expression and a list of symbols as input, and returns
+    a list of tuples representing the terms of the polynomial expression, sorted according to the
+    ordering of the symbols.
     
-def k_component_signature(term):
+    :param expression: The `expression` parameter is the polynomial expression that you want to sort
+    out. It can be any valid polynomial expression in terms of the given symbols
+    :param symbols: The `symbols` parameter is a list of symbols that represent the variables in the
+    polynomial expression. These symbols should be commutative in order for the expression to be treated as a polynomial in them.
+    :return: The function `sort_out_polynomials` returns a list of tuples. Each tuple contains two
+    elements: the first element is a tuple representing the orders of the polynomial terms (sorted similarly to `symbols`), and the
+    second element is the corresponding coefficient. If a order is None, the corresponding coefficient will depend on the related symbol in a non-polynomial manner.
+    """
+    if any(not s.is_commutative for s in symbols):
+        raise TypeError(f'symbols have to be commutative in order be treated as polynomials: the following symbols were non-commutative: {[s for s in symbols if not s.is_commutative]}')
+    
+    
+    from sympy import polys
+    exprs = ((tuple(),expression),) # each element is a term in the polynomial represented by tuple containin tuple of orders and the coefficient. orders are ordered according to ordering of symbols. 
+    symbols_list = list(symbols)
+    while len(symbols_list):
+        sym = symbols_list.pop(0)
+        new_exprs = []
+        for expr in exprs:
+            ex = expr[1]
+            if not ex.is_polynomial(sym):
+                if isinstance(ex,sympy.Add):
+                    # remove the parts that are not polynomials
+                    not_poly = sympy.Add(*(a for a in ex.args if not a.is_polynomial(sym)))
+                    is_poly = sympy.Add(*(a for a in ex.args if a.is_polynomial(sym)))
+                    new_exprs.append((expr[0]+(None,),not_poly))
+                    print(not_poly,is_poly)
+                    ex = is_poly
+                else:
+                    new_exprs.append((expr[0]+(None,),ex)) # not polynomial # not polynomial
+            
+            if ex.is_constant(sym):
+                new_exprs.append((expr[0]+(0,),ex))
+                continue 
+            # treat all the expressions in expres as univariate polynomial in sym (and all other symbols as constants)
+            
+            
+            univariate_expr = polys.Poly(ex,sym)#domain=domain)
+            new_exprs.extend(((expr[0]+t[0],t[1]) for t in univariate_expr.all_terms()))
+        exprs = new_exprs
+        
+    return [ e for e in exprs if e[1]!=0]
+        
+
+def extract_valid_bipartition_part(expr):
+    """Extracts the bipartition-parts of an expression for which there exists analytically solved matrix representations
+    :param expr: _description_
+    :type expr: sympy.Piecewise
+    
+    
+    Returns as list of all the atomic piecewise functions (1 if X_i>0, 0 else ) for X_i = x,y,z, as well as the remaining factor 
+    """
+    xx,yy,zz = sympy.symbols('x,y,z') # commuting ones so that we can use the min the relations
+    atomic_relations = ((xx>0,xx>=0),(yy>0,yy>=0),(zz>0,zz>=0))
+
+    valid_relations = {r[0] for r in atomic_relations}
+    valid_relations.update(r[1] for r in atomic_relations)
+    for i in range(3):
+        j = (i+1)%3
+        for e in range(2):
+            for f in range(2):
+                valid_relations.add(sympy.And(atomic_relations[i][e],atomic_relations[j][f]))
+
+    for i in range(2):
+        for j in range(2):
+            for k in range(2):
+                valid_relations.add(sympy.And(atomic_relations[0][i],atomic_relations[1][j],atomic_relations[2][k]))
+
+    valid_bipartitions = []
+    remains = None
+    position_symbols = (xx,yy,zz)
+    
+    expr = expr.subs({X:xx,Y:yy,Z:zz})
+    
+    if len(expr.args)>2:
+        raise NotImplementedError(f'too complex PieceWise: {expr}')
+    
+    for arg in expr.args:
+        if isinstance(arg[1], sympy.logic.boolalg.BooleanTrue):
+            continue
+        if arg[1] in valid_relations:
+            present_syms = arg[1].free_symbols.intersection(set(position_symbols))
+            valid_syms = [p  for p in present_syms if p not in arg[0].free_symbols]
+            for p in valid_syms:
+                # evaluate the bipartition directions analytically
+                valid_bipartitions.append(sympy.Piecewise((1,p>0),(0,True)))
+                
+                remains = arg[0]
+            else:
+                remains = expr.subs({p:1 for p in valid_syms}) # ignore all peacewise for the valid ones
+        else:
+            remains = expr
+        print(valid_bipartitions,remains)       
+    return valid_bipartitions,remains
+                
+
+def k_component_signature(term,k_symbols=None):
     """Computes the component wise signature of the term wrt. the Ks i.e. kx*ky*kz becomes (0,1,2) and kx*kx*kz*kx becomes (0,0,2,0)
 
     :param term: The term to determine the signature of
     :type term: List[Any]
     """
     term = expand_term(term) # make sure input is of right form
-    
+    if k_symbols is None:
+        k_symbols = (Kx,Ky,Kz)
     signature = []
-    Ks = (Kx,Ky,Kz)
     for t in term:
-        if t in Ks:
-            signature.append(Ks.index(t))
-    
+        if t in k_symbols:
+            signature.append(k_symbols.index(t))
     return signature
 
+    
+def dummify_non_commutative(expr):
+    """
+    The function dummify_non_commutative takes an expression as input and returns a dictionary of dummy
+    symbols with the same assumptions as the free symbols in the expression.
+    
+    :param expr: The `expr` parameter is the expression for which we want to dummify the non-commutative
+    symbols
+    :return: The function `dummify_non_commutative` returns a dictionary where the keys are the free
+    symbols in the input expression `expr`, and the values are dummy symbols with the same assumptions
+    as the corresponding free symbols.
+    """
+    return {s:sympy.Dummy(**s.assumptions0) for s in expr.free_symbols}
+
+    
+def symbolize_array(array,symbol_base_name):
+    """replaces expressions in the array by abstract symbols in an efficient manner (with as few new symbols as possible)
+    It is assumed the that array has been 'symbolized' when X,Y,Z and x,y,z no longer appear in the array
+
+    :param array: sympy array to symbolize
+    :type array: Sympy.Array
+    :param symbol_base_name: str: bas
+    :type symbol_base_name: _type_
+    """
+
+    if isinstance(symbol_base_name,sympy.Symbol):
+        symbol_base_name = symbol_base_name.name
+    
+    if symbol_base_name[-3:] == '(x)':
+        symbol_base_name = symbol_base_name[:-3]
+    
+    def new_symbol():
+        index_counter = 0 
+        while True:
+            index_counter +=1
+            next_name = '('+symbol_base_name+f')_{index_counter}(x)'
+            yield sympy.Symbol(next_name,commutative=False)
+    
+    symbol_generator = new_symbol()
+    
+    symbol_dict = {}
+    new_array = array.as_mutable()
+    for i,expr in enumerate(np.array(new_array).ravel()):
+        #check if we have seen a similar_expression:
+        if expr.is_constant():
+            continue # no need to do anything
+        
+        post_fix = None # post_fix function is applied to the EXPRESSION IN THE DICT and should become the EXPRESSION IN THE ARRAY
+        if expr in symbol_dict.values():
+            post_fix = lambda x:x
+        elif -expr in symbol_dict.values():
+            post_fix = lambda x: -1*X
+        elif sympy.conjugate(expr) in symbol_dict.values():
+            post_fix = lambda x: sympy.conjugate(x)
+        elif any((expr/f).is_constant(X,Y,Z,*sympy.symbols('x,y,z')) for f in symbol_dict.values()):
+            for f in symbol_dict.values():
+                coeff = expr/f
+                if coeff.is_constant(X,Y,Z,*sympy.symbols('x,y,z')):
+                    post_fix = lambda x:coeff*x
+                    break
+            else:
+                ValueError('we should not get here...')
+            
+        ix = np.unravel_index(i,array.shape)
+        # replace with symbol
+        if post_fix is None:
+            sym = next(symbol_generator)
+            symbol_dict[sym] = expr
+            new_array[ix] = sym
+        else:
+            # we have already seen a similar_expression
+            sym = next(s for s,f in symbol_dict.items() if post_fix(f)==expr)
+            new_array[ix] = post_fix(sym)
+    return sympy.Array(new_array),symbol_dict 

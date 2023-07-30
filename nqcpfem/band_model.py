@@ -14,20 +14,20 @@ such as g-factor) to the Hamiltonian term expresses as STATIC methods and with t
 field named `Bvec`.
 """
 
-from sre_parse import SubPattern
 import numpy as np
 import sympy
-import time
+from .functions import SymbolicFunction,NumericalFunction
+from . import functions as funcs
+
 import logging
 from . import PETSc
-from typing import Any, Iterable,Union,Sequence,Annotated
+from typing import Any, Iterable,Union,Sequence,Annotated,Callable
 import typing
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
 
 # specify global names for important variables 
-__MOMENTUM_NAMES__ = (r'k_{x}',r'k_{y}',r'k_{z}')
-__POSITION_NAMES__ = (r'x',r'y',r'z')
+from .symbolic import __MOMENTUM_NAMES__,__POSITION_NAMES__,dummify_non_commutative,expand_term
 __MAGNETIC_FIELD_NAMES__ = (r'B_{x}(x)',r'B_{y}(x)',r'B_{z}(x)') # These are always treated as functions!
 __VECTOR_FIELD_NAMES__ =  (r'A_{x}(x)',r'A_{y}(x)',r'A_{z}(x)') # these are always treated as functions!
 
@@ -111,6 +111,8 @@ class BandModel(UpdatableObject):
         independent_vars['parameter_dict'] =   {s:None for s in independent_vars['preprocessed_array'].free_symbols if (s.name not in __MOMENTUM_NAMES__+__POSITION_NAMES__+constant_names) and (s.name[-3:] != '(x)')} #type: ignore
         
         independent_vars['function_dict']  = {s:None for s in independent_vars['preprocessed_array'].free_symbols if  s.name[-3:] == '(x)'} # type: ignore
+        independent_vars['function_postprocessing_spec'] = {}
+        
         # Superconducting order parameter
         independent_vars['SC_Delta'] = None
         
@@ -252,6 +254,16 @@ class BandModel(UpdatableObject):
         
     
     @auto_update
+    def function_post_processor(self):
+        # functi is combination of functions that take functions dict and model and return new function dict
+        return self.__postprocessing_constructor__(self.independent_vars['function_postprocessing_spec'],self)
+    
+    @auto_update
+    def post_processed_functions(self):
+        return self.function_post_processor()(self.independent_vars['function_dict'],self)
+    
+    
+    @auto_update
     def numerical_array(self):
         """
 
@@ -261,14 +273,12 @@ class BandModel(UpdatableObject):
             float_format (_type_, optional): The format for the floats *that are not in the parameter_dict*. Defaults to PETSc.ScalarType.
         """
         
-        
         var_dict = self.independent_vars['parameter_dict'].copy() # make copy for adding constants and x,y,z and k_x,k_y,k_z. These will just be evaluated as their symbols
         # specify B field from A field if it is present:
         
         unit_transformed_constants = self.independent_vars['constants'].copy() # todo  make transformation of unit scales 
         
         var_dict.update(unit_transformed_constants)
-        var_dict.update({k:sympy.symbols(k.name) for k in self.momentum_symbols})  #casts momentum symbols as commutative from now on!
 
         unspecified = [k for k,v in var_dict.items() if v is None]
         if unspecified:
@@ -276,23 +286,24 @@ class BandModel(UpdatableObject):
         # evaluate all functions:
         from typing import Callable
         position_set = set(self.position_symbols)
-        for sym,func in self.independent_vars['function_dict'].items():
+        for sym,func in self.post_processed_functions().items():
+            # if the function is symbolic, we replace it with its symbolic representation, else, we keep it as a symbol
             if func is None:
                 if sym in sympy.symbols(__MAGNETIC_FIELD_NAMES__):
                     var_dict[sym] = None # this may be overwritten later if A fields are specified. Otherwise and exception will be raised later
                     continue
                 raise ValueError(f'function with symbol {sym} was not assigned a value')
-            if isinstance(func,Callable):
-                var_dict[sym] = func(*self.position_symbols[:self.spatial_dim])
-            else:
+            if isinstance(func,SymbolicFunction):
                 # substitue all parameters
+                func = func.expression
                 if any((s,s) in var_dict.items() for s in func.free_symbols):
                     raise ValueError(f'Infinite recursion due to substituion of symbol with itself: {[s for s in func.free_syms if (s,s) in var_dict.items()]}')
                 func = func.subs(var_dict)
                 if position_set.union(func.free_symbols) != position_set:
                     raise ValueError(f'Passed function had symbols not contained in the parameter-dict. Only x,y,z should be left but we have: {func.free_symbols}')
                 var_dict[sym] = func
-    
+
+        
                 
         
         A=sympy.symbols(__VECTOR_FIELD_NAMES__) 
@@ -315,16 +326,29 @@ class BandModel(UpdatableObject):
                 LOGGER.debug('weird A-B case happened')
         
         
-        var_dict.update({k:sympy.symbols(k.name) for k in self.position_symbols})  #add position symbols as themselves (do it after function spec to avoid infinite recursion)
+        var_dict.update({k:k for k in self.momentum_symbols})  #casts momentum symbols as commutative from now on!
+        var_dict.update({k:k for k in self.position_symbols})  #add position symbols as themselves (do it after function spec to avoid infinite recursion)
+        # add function numerical functions to dict so that we can use lambdify
+        var_dict.update({s:s for s,f in self.independent_vars['function_dict'].items() if isinstance(f,NumericalFunction)})
         
+        if any(True for f in self.independent_vars['function_dict'].values() if not isinstance(f,(NumericalFunction,SymbolicFunction,type(None)) )):
+            wrong_dict =  {s:f for s,f in self.independent_vars['function_dict'].items() if not isinstance(f,(NumericalFunction,SymbolicFunction))}
+            raise TypeError(f'functions must be passed as either numerical function or symbolic functions. Recieved: {wrong_dict}')
+
+
         unspecified = [k for k,v in var_dict.items() if v is None]
         if unspecified:
             raise ValueError(f'the following values have not been specified so the model cannot be cast as a numerical array:\n {unspecified}')
         
         LOGGER.debug(f'building numerical array with var_dict: \n{var_dict}')
-        numpy_version = np.array(sympy.lambdify(var_dict.keys(),self.post_processed_array(),dummify=True)(*var_dict.values())) # set Dummify to True to make sure that symbol names do not break the code
         
+        # we have to dummify ourselves, because dummies created in lambdify are commutative which we don't want
+        dummy_map = dummify_non_commutative(self.post_processed_array())
+        dummified = self.post_processed_array().subs(dummy_map)
+        value_map = {dummy_map.get(s,s):val for s,val in var_dict.items()} # cast dummy symbols to values
+        numpy_version = np.array(sympy.lambdify(value_map.keys(),dummified,dummify=False)(*value_map.values())) # set Dummify to True to make sure that symbol names do not break the code
         
+        numpy_version = np.array(dummified.subs(value_map)) # workaround
         return numpy_version
 
     @auto_update
@@ -334,9 +358,9 @@ class BandModel(UpdatableObject):
         """
         
         commuting_momentum_symbols = sympy.symbols(__MOMENTUM_NAMES__) # these are the commuting momentum symbols which are in the numerical version of the Hamiltonian
-        array =   self.post_processed_array().subs({k:ck for k,ck in zip(self.momentum_symbols,commuting_momentum_symbols)}).subs({sympy.symbols(r'\hbar'):sympy.symbols('hbar')}) # \hbar breaks lambdify so we replace with a working name :( 
+        #array =   self.post_processed_array().subs({k:ck for k,ck in zip(self.momentum_symbols,commuting_momentum_symbols)}).subs({sympy.symbols(r'\hbar'):sympy.symbols('hbar')}) # \hbar breaks lambdify so we replace with a working name :( 
         
-        disassemble_dict = self.__make_tensor_dict__(array)
+        disassemble_dict = self.__make_tensor_dict__(self.post_processed_array()) # we do not need commuting Ks anymore
         
 
         return disassemble_dict
@@ -362,34 +386,71 @@ class BandModel(UpdatableObject):
         
         
         
-        # Fix this bit using symbolic, and make it so that the array is populated as if the k-s did not commute i.e. it matters whether to pick T[...,0,1]  or T[...,1,0] (kx*ky vs ky*kx). This is needed to assure that ordering is preserved for FEM
-        from sympy.polys.polytools import degree_list
         disassemble_dict = {} # dict containing tensors corresponding to the respective order
-
-        commuting_momentum_symbols = sympy.symbols(__MOMENTUM_NAMES__) # these are the commuting momentum symbols which are in the numerical version of the Hamiltonian
-        
+        from .symbolic import k_component_signature,expand_term
         
         for i,val in enumerate(np.array(array).ravel()):
             # split up value into terms 
-            val = sympy.sympify(val).expand()
+            val = sympy.sympify(val)
+
+            
+            val = val.expand()
             terms = val.args if isinstance(val,sympy.core.add.Add) else (val,)
             for term in terms: 
-                try:
-                    orders = degree_list(term,commuting_momentum_symbols)
-                except TypeError as e:
-                    continue 
-                arr = disassemble_dict.get(sum(orders),np.zeros(self.tensor_shape+(self.spatial_dim,)*(sum(orders)),'O'))
+                # compute the k-component_signature
+                if isinstance(term,sympy.Piecewise):
+                    # check if the term is a valid piecewise. If not, raise Notimplemented (determine what you want to do)
+                    from .symbolic import extract_valid_bipartition_part
+                    piecewise_parts,remains = extract_valid_bipartition_part(term)
+                    if isinstance(remains,sympy.Piecewise):
+                        raise NotImplementedError('TODO')
+                    term = remains
+                else:
+                    piecewise_parts = []
+                
+                
+                k_signature = k_component_signature(expand_term(term))
+                print(term,k_signature,expand_term(term))
+                arr = disassemble_dict.get(len(k_signature),np.zeros(self.tensor_shape+(self.spatial_dim,)*(len(k_signature)),'O'))
                 # k-s commute, and by convention we will always order them as k_x k_x ... k_x k_y k_y ... k_y k_z k_z ... k_z
-                arr_i = np.unravel_index(i,self.tensor_shape)+(0,)*orders[0]+(1,)*orders[1]+(2,)*orders[2]
-                addition =   sympy.lambdify(commuting_momentum_symbols,term)(1,1,1) if any(orders) else term # this could give an error if ks and functions V(x) are mixed!
-                arr[arr_i] += addition
+                arr_i = np.unravel_index(i,self.tensor_shape)+tuple(k_signature)
+                term = term.subs({sympy.symbols(r'\hbar'):sympy.symbols('hbar')})
+                addition =   sympy.lambdify(self.momentum_symbols,term)(1,1,1) if len(k_signature) else term 
+                arr[arr_i] += addition*sympy.Mul(*piecewise_parts) # add the piecewise parts back on again
 
                 # add coefficient to array
-                disassemble_dict[sum(orders)] = arr
+                disassemble_dict[len(k_signature)] = arr
 
             
         return disassemble_dict
-
+    
+    
+    def fix_position(self,array,x,y=None,z=None):
+        def subst_position(array,pos):
+            # replace all functions as well:
+            subs_dict = {xx:pp for xx,pp in zip(self.position_symbols,pos)}
+            subs_dict.update({s:f(*pos) for s,f in self.post_processed_functions().items()})           
+            return sympy.Array(array).subs(subs_dict)
+            
+            
+        
+        if isinstance(array,dict):
+            #case when we use this to fix postion of tensor_repr
+            new_dict = {}
+            for k,arr in array.items():
+                new_arr = subst_position(arr,(x,y,z))
+                if isinstance(arr,np.ndarray):
+                    new_arr = np.array(new_arr)
+                new_dict[k] = new_arr
+            return new_dict
+            
+        else:
+            #case when we use this to fix position of arrays
+            new_arr = subst_position(array,(x,y,z))
+            if isinstance(array,np.ndarray):
+                new_arr = np.array(new_arr)
+            return new_arr
+    
     #endregion
 
     # region spectrum analysis
@@ -406,9 +467,10 @@ class BandModel(UpdatableObject):
             return_array = True 
             
         # make function which plugs k-vectors into the array
-        fixed_array:sympy.tensor.ImmutableDenseNDimArray = sympy.Array(self.numerical_array()).subs({pos_sym:pos for pos_sym,pos in zip(self.position_symbols,position)}) # type: ignore
+        #fixed_array:sympy.tensor.ImmutableDenseNDimArray = sympy.Array(self.numerical_array()).subs({pos_sym:pos for pos_sym,pos in zip(self.position_symbols,position)}) # type: ignore
+        fixed_array = sympy.Array(self.fix_position(self.numerical_array(),*position))
         commuting_momentum_symbols = sympy.symbols(__MOMENTUM_NAMES__)
-        array_func = sympy.lambdify(commuting_momentum_symbols,fixed_array,dummify=True)
+        array_func = sympy.lambdify(self.momentum_symbols,fixed_array,dummify=True) # dummify replaces ks with commuting symbols, but we substitue with numbers anyways 
         
         # populate as an iterable which should be stacked rather than this mess of indexing!
         mat_shape = np.prod(fixed_array.shape[::2]) # shape of the matrix to diagonalize
@@ -560,12 +622,19 @@ class BandModel(UpdatableObject):
         :param vector_potential: vector potential function. Must have length 3 and contain expressions which can be constant or depend on x,y,z (but not kx,ky,kz)
         :type vector_potential: list
         """
-        pass
         self.independent_vars['function_dict'][sympy.symbols(__VECTOR_FIELD_NAMES__[0])] = None if vector_potential is None else vector_potential[0]
         self.independent_vars['function_dict'][sympy.symbols(__VECTOR_FIELD_NAMES__[1])] = None if vector_potential is None else vector_potential[1]
         self.independent_vars['function_dict'][sympy.symbols(__VECTOR_FIELD_NAMES__[2])] = None if vector_potential is None else vector_potential[2]
         
         self.independent_vars['parameter_dict'][sympy.symbols('q_{c}')] = charge
+        
+        #cast as Functions
+        for A in __VECTOR_FIELD_NAMES__: 
+            if not isinstance(self.independent_vars['function_dict'][sympy.symbols(A)],funcs.Function):
+                f = self.independent_vars['function_dict'][sympy.symbols(A)] 
+                self.independent_vars['function_dict'][sympy.symbols(A)] = NumericalFunction(f,sympy.symbols(A),[0,1,2]) if isinstance(f,Callable) else SymbolicFunction(sympy.sympify(f),sympy.symbols(A))
+                
+        
         
         def vector_potential_adder(array,model):
             """Adds a vector potential to the model by replacing k_i with k_i +eA/hbar where e is the charge defined in the model
@@ -676,6 +745,8 @@ class BandModel(UpdatableObject):
             return bdg_extended
         
         self.independent_vars['postprocessing_function_specification']['BdG'] = BdG_extension
+
+        # No alteration of the functions is performed since time-reversal dows not change position
         return self
     
 
@@ -684,7 +755,7 @@ class BandModel(UpdatableObject):
     #endregion 
     
     # region z-confinement
-    def add_z_confinement(self,nz_modes,z_confinement_type,lz=None):
+    def add_z_confinement(self,nz_modes,z_confinement_type,lz=None,omega=None):
         """Evaluates the z-direction on a finite set of basis vectors depending on the shape of the z-confinement.
 
 
@@ -693,7 +764,15 @@ class BandModel(UpdatableObject):
             nz_modes (int): number of z-modes
             z_confinement_type (str): the type of confinement potential. Currently, either "well" or "box" are supported.
         """
-        self.independent_vars['parameter_dict'][sympy.symbols('l_z')] = lz
+        
+        if z_confinement_type == 'box':
+            self.independent_vars['parameter_dict'][sympy.symbols('l_z')] = lz
+            eval_kwargs = {'L':sympy.symbols('l_z')}
+        elif z_confinement_type == 'well':
+            self.independent_vars['parameter_dict'][sympy.symbols(r'\omega')] = omega
+            eval_kwargs = {'omega':sympy.symbols(r'\omega'),'m':sympy.symbols('m')}
+        else:
+            raise NotImplementedError(f'{z_confinement_type} is not implemneted')
         
         self.independent_vars['constants'][sympy.symbols(r'n_{z-modes}')] = nz_modes  #  should probably not be changed...
         self.independent_vars['constants'][sympy.symbols(r'z_{confinement_type}')] = z_confinement_type # should probably also not be changed 
@@ -709,6 +788,8 @@ class BandModel(UpdatableObject):
             
             z_confinement_type = model.independent_vars['constants'][sympy.symbols(r'z_{confinement_type}')]
             if  z_confinement_type== 'box':
+                
+                
                 def k_z_func(order):
                     def __k_mat__(order, L, n_modes):
                         """
@@ -746,16 +827,18 @@ class BandModel(UpdatableObject):
                         return p_mat(order)
                             
                     k_mat = __k_mat__(order,sympy.symbols('l_z'),model.independent_vars['constants'][sympy.symbols('n_{z-modes}')])
-                    print(k_mat)
                     return k_mat #__k_mat__(order,model.parameter_dict[sympy.symbols('l_z')],model.constants[sympy.symbols('n_{z-modes}')])
-            
+
                 def z_func(order):
-                    if order==0:
-                        return np.eye(model.independent_vars['constants'][sympy.symbols('n_{z-modes}')]) # just return identity
-                    else:
-                        raise NotImplementedError(f'{order}')
+                    from .functions import box_polynomial_matrix
+                    
+                    L = model.independent_vars['parameter_dict'][sympy.symbols('l_z')]
+                    nz = model.independen_vars['constants'][sympy.symbols(r'n_{z-modes}')]
+                    return box_polynomial_matrix(nz,L,order)
             
             elif z_confinement_type == 'well':
+                
+                
                 raise NotImplementedError()
                 def k_z_func(order):
                     raise NotImplementedError()
@@ -769,61 +852,66 @@ class BandModel(UpdatableObject):
             z = model.position_symbols[-1] 
             
             # construct disassemble_dict (divide Hamiltonian into terms according to their dependency on kz and z)
+            nz_modes = model.independent_vars['constants'][sympy.symbols(r'n_{z-modes}')]
+            new_arr = sympy.tensor.Array.zeros(*array.shape,nz_modes,nz_modes).as_mutable() # check this works
+                        
             for i,val in enumerate(np.array(array).ravel()):
                 
                 val = val.expand(mul=True) # expand any parentheses
                 terms = val.args if isinstance(val,sympy.core.add.Add) else (val,)
                 for term in terms: 
-                    try:
-                        
-                        # replace all momentum_symbols with a new symbols that commute and determine the order (because it for some reason doesn't work when there are non-commuting numbers).
-                        D = sympy.Dummy(commutative=True) # dummy symbol for all other Ks
-                        Dz = sympy.Dummy(commutative=True) # dummy symbol for kz
-                        dummify={k:D for k in model.momentum_symbols[:-1]}
-                        dummify[kz] = Dz
-                        commuting_term = term.subs(dummify)
-                        
-                        k_order = degree(commuting_term,Dz) #type:ignore
-                        z_order = degree(commuting_term,z) # type:ignore
-                        
-                        if isinstance(k_order,sympy.core.numbers.NegativeInfinity):
-                            k_order = 0
-                        if isinstance(z_order,sympy.core.numbers.NegativeInfinity):
-                            z_order = 0
-                        total_order=(z_order,k_order)
-                    except TypeError as e:
-                        continue 
-                    
-                    if total_order in disassemble_dict.keys():
-                        arr = disassemble_dict[total_order]
-                    else:    
-                        arr = np.zeros(array.shape,dtype='O') 
-                    # k-s commute, and by convention we will always order them as k_x k_x ... k_x k_y k_y ... k_y k_z k_z ... k_z
+                    search_symbols = tuple(f for f in term.free_symbols if f.name[-3:] == '(x)')
+                    term = expand_term(term,split_pow=False) # expand into factors 
 
-                    arr_i = np.unravel_index(i,array.shape)
-                    arr[arr_i] += term.subs({kz:1,z:1}) # replace kz and z by 1 
-                    disassemble_dict[total_order] = arr
+                    coeff = 1
+                    matrix = sympy.Matrix.eye(nz_modes) # check this works )
+                    for t in term:
+                        if not t.is_constant(kz):
+                            # compute the matrix_expression of kz and z and Vs
+                            matrix = matrix @ sympy.Matrix(k_z_func(t.args[1] if isinstance(t,sympy.Pow) else 1))
+                        elif not t.is_constant(z):
+                            matrix = matrix @ sympy.Matrix(z_func(t.args[1] if isinstance(t,sympy.Pow) else 1))
+                        elif len(search_symbols) and not t.is_constant(*search_symbols):
+                            projected = model.post_processed_functions()[t].project_to_basis([2],nz_modes,type=z_confinement_type,**eval_kwargs)[0]
+                            matrix = matrix @sympy.Matrix(projected)
+                        else:
+                            coeff = coeff*t
+                    # with the signature, we can replace kz and z in the correct order.
 
-            # tensor_dot the tensors by their kz_operator and z_operator expressed as a matrix
-            def combiner(o,x):
-                if nz_modes ==1:
-                    return x*k_z_func(order=o[1])[0,0]*z_func(order=o[0])[0,0]    
-                else:  # NB! we assume that the operators are ordered as z**N @ kz**M ! and we assume that we can compute the matrix element of this operator as the matrix multiplication of the matrix representations of z**N and kz**M
-                    z_kz_matrix = z_func(order=o[0]) @ k_z_func(order=o[1])  
-                    return np.tensordot(x,z_kz_matrix,axes=0)
+                    index = np.unravel_index(i,array.shape)+(slice(0,matrix.shape[0]),slice(0,matrix.shape[1]))
                     
-                    
-                #combiner = lambda o,x: x*k_z_func(o)[0,0]
+                    new_arr[index] += sympy.Array(coeff*matrix)
             
-                #combiner = lambda o,x: np.tensordot(x,k_z_func(o),axes=0)# TODO: why [0,0],axes=0) # probably from the `drop excited modes case?`
-                
-            new_expression = sympy.Array(sum(combiner(o,mat) for o,mat in disassemble_dict.items())) # type: ignore
             
-            return new_expression
+            
+            return sympy.Array(new_arr)
 
-            
-        
         self.independent_vars['postprocessing_function_specification']['z-confinement'] = z_confinement_func
+
+        def z_confinement_functions_processor(funcs,model):
+            """
+            The function `z_confinement_functions_processor` takes in a dictionary of functions and a
+            model, and returns a new dictionary that includes the functions projected onto a basis.
+            
+            :param funcs: The parameter "funcs" is a dictionary that contains functions as values. Each
+            function represents a mathematical function that you want to process
+            :param model: The "model" parameter is an object that represents a mathematical model or
+            system. It contains information about the variables, equations, and other properties
+            of the model.
+            :type model: BandModel
+            :return: a new dictionary that includes all the functions from the input dictionary `funcs`
+            and any new functions that are generated by projecting the existing functions onto a basis.
+            """
+            new_dict = funcs.copy()
+            # add all the new functions from projecting as well
+            for f in funcs.values():
+                
+                new_dict.update(f.project_to_basis([2],[model.independent_vars['constants'][sympy.symbols(r'n_{z-modes}')]],z_confinement_type,**eval_kwargs)[1])
+            return new_dict
+        
+        self.independent_vars['function_postprocessing_spec']['z-confinement'] = z_confinement_functions_processor
+        # For the functions that depend on z, we need to 
+        
         return self
         
 
@@ -910,8 +998,15 @@ class FreeFermion(BandModel):
             Bx,By,Bz = sympy.symbols(__MAGNETIC_FIELD_NAMES__)
             B = sympy.Array([Bx,By,Bz])
             
-            Bvec = (0,0,0) if Bvec is None else Bvec
+            Bvec = (None,None,None) if Bvec is None else Bvec
             self.independent_vars['function_dict'].update({B[i]:Bvec[i] for i in range(3)})
+        
+            #cast as Functions
+            for b in __MAGNETIC_FIELD_NAMES__: 
+                if not isinstance(self.independent_vars['function_dict'][sympy.symbols(b)],funcs.Function):
+                    f = self.independent_vars['function_dict'][sympy.symbols(b)] 
+                    self.independent_vars['function_dict'][sympy.symbols(b)] = NumericalFunction(f,sympy.symbols(b),[0,1,2]) if isinstance(f,Callable) else SymbolicFunction(sympy.sympify(f),sympy.symbols(b))
+                    
         
         
         

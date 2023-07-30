@@ -18,9 +18,6 @@ class TestBoxEFM(TestCase):
 		self.domain = RectangleDomain(self.Lx, self.Ly, self.Lz)
 		self.model = BoxEFM(self.band_model, self.domain, *self.n_modes)
 
-	def test_add_potential(self):
-		self.fail()
-
 	def test_positional_rep(self):
 		n_points = 100
 		import numpy as np
@@ -97,4 +94,3 @@ class TestBoxEFM(TestCase):
 		reshaped_vector = self.model.eigensolutions_to_eigentensors(vector)
 		np.testing.assert_array_equal(reshaped_vector,vector.T.reshape((2,1,3,3,3)),err_msg=f'vectors of indices {val,val2} were not '
 		                                                                                    f'rebroadcast correctly')
-
