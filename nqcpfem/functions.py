@@ -144,9 +144,9 @@ class SymbolicFunction(Function):
             remains = self._expression_
 
 
-            polynomials = sort_out_polynomials(remains,(X,Y,Z)) if remains is not None else []
+            polynomials = sort_out_polynomials(remains,relevant_position_syms) if remains is not None else []
         
-        # Todo: fix this, 
+        # needs fixing?
         if type =='box':
             if not 'L' in kwargs:
                 raise SyntaxError(f'projection onto box modes requires passing the `L` kwarg ')
@@ -184,14 +184,15 @@ class SymbolicFunction(Function):
             for poly in polynomials:
                 coordinate_wise_matrices = {p:None for p in relevant_position_syms}
                 had_numerical=False
-                for (p,d,N,l) in zip(relevant_position_syms,directions,n_modes,L):
-                    if poly[0][d] is None:
+                for i,(p,N,l) in enumerate(zip(relevant_position_syms,n_modes,L)):
+
+                    if poly[0][i] is None:
                         had_numerical = True
                         # numerical eval necessary:
                         func_factory = __basis_function_factory__(l,use_sympy=True)
                         coordinate_wise_matrices[p]= numerically_evaluate_symbolic_elements(poly[1],p,(-l,l),func_factory,N,kwargs.get('integration_method','sympy'))
                     else:
-                        coordinate_wise_matrices[p]=box_polynomial_matrix(N,l,poly[0][d])
+                        coordinate_wise_matrices[p]=box_polynomial_matrix(N,l,poly[0][i])
                 for (p,N) in zip(relevant_position_syms,n_modes):
                     if coordinate_wise_matrices[p] is None:
                         # generate identity_matrix as array:

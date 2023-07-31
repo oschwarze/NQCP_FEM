@@ -1,10 +1,13 @@
 import numpy as np
 import logging,sys
-from .band_modeling import BandModel,LuttingerKohnHamiltonian,FreeFermion,extend_shape
+from .band_model import BandModel,LuttingerKohnHamiltonian,FreeFermion,__MAGNETIC_FIELD_NAMES__,__VECTOR_FIELD_NAMES__
 from .envelope_function import EnvelopeFunctionModel
 from .spin_gap import find_spin_gap
 from petsc4py import PETSc
 import copy
+import sympy
+from . import functions as funcs
+from . import symbolic as symb
 from .solvers import ModelSolver
 
 LOG = logging.getLogger(__name__)
@@ -53,39 +56,55 @@ class GMatrix():
 		"""
 		# currently only the .add_LK_magnetic_field magnetic field is supported. This only works for magnetic terms
 		# that are independent of position (so both B field and g_tensor must be homogenous in position)
-		band_model = self.envelope_model.band_model
-		if 'Bvec' not in band_model.parameter_dict:
+		from copy import deepcopy
+		band_model = deepcopy(self.envelope_model.band_model) 
+		if all(sympy.symbols(n,commutative=False) not in band_model.post_processed_functions() for n in __MAGNETIC_FIELD_NAMES__) or all(sympy.symbols(n,commutative=False) not in band_model.post_processed_functions() for n in __VECTOR_FIELD_NAMES__):
 			raise ValueError(f'band model had no magnetic term. g matrix can only be computed for band models with magnetic terms defined')
-		if band_model.parameter_dict['Bvec'] != [0, 0, 0]:
-			LOG.info(f' magnetic field was non-zero, setting it to zero in order to produce meaningfull gmatrix computation')
-			band_model.parameter_dict['Bvec'] = [0, 0, 0]
 
+		# replace all band_model parameters with zerofunction
+		band_model.independent_vars['function_dict'].update({sympy.symbols(n,commutative=False):funcs.SymbolicFunction(sympy.sympify(0),sympy.symbols(n,commutative=False)) for n in __MAGNETIC_FIELD_NAMES__+__VECTOR_FIELD_NAMES__})
 
-		if isinstance(band_model,LuttingerKohnHamiltonian):
-			magnetic_function = band_model.__magnetic_term__ # this is the only possible magetic term to add in this case
-		elif isinstance(band_model,FreeFermion):
-			magnetic_function = band_model.__magnetic_term__ # this is the only possuble magnetic term for Free Fermions
+		# determine relevant symbols for G-matrix
+		Ax,Ay,Az = sympy.symbols(__VECTOR_FIELD_NAMES__,commutative=False)
+		if any(A in self.envelope_model.band_model.independent_vars['function_dict'] for A in (Ax,Ay,Az)):
+			# ordered as flattened version oaf M_ij = d_j(A_i) where d_j is derivative in direciont j and A_i is field in direction i
+			# Indexing wrt flattend index measn that M_N = M_ij with N=3*i+j
+			has_A_field = True
+			relevant_symbols = [symb.derivative_of_function(a,x) for a in (Ax,Ay,Az) for x in (symb.X,symb.Y,symb.Z)]
 		else:
-			# Add new models as above
-			raise NotImplementedError(f'The band model given does not have a magnetic term. Received {band_model}')
+			has_A_field=False
+			relevant_symbols = []
+		
+		# add magnetic field to this 
+		relevant_symbols += [sympy.symbols(__MAGNETIC_FIELD_NAMES__,commutative=False)]
 
-		# make parameter dict to pass to the implemented methods to get the matrix M in B
-		if param_dict is None:
-			param_dict = band_model.parameter_dict.copy()
-		else:
-			new_dict = band_model.parameter_dict.copy()
-			new_dict.update(param_dict)
-			param_dict = new_dict
+		H = sympy.Array(band_model.numerical_array()) # make numerical so we don't have to bother with constants and parameters
+		aranged_H = symb.arange_ks_array(H,self.envelope_model.k_signature)
 
-		# compute the components of M
-		param_dict['Bvec'] = [1,0,0]
-		Mx_parts = magnetic_function(**param_dict)
-		param_dict['Bvec'] = [0,1,0]
-		My_parts = magnetic_function(**param_dict)
-		param_dict['Bvec'] = [0, 0, 1]
-		Mz_parts = magnetic_function(**param_dict)
+		# assume from now on that the position if the Ks is fixed so we can make the commutative
 
-		M_parts = np.stack([Mx_parts,My_parts,Mz_parts],axis=0)
+		comm_relevant_symbols = symb.enforce_commutativity(relevant_symbols)
+		comm_H = symb.enforce_commutativity(aranged_H)
+		# deconstruct H into polynomials in the relevant symbols:
+		decomposed_H = symb.array_sort_out_polynomials(comm_H,comm_relevant_symbols)
+
+		# determine the Mx,My,Mz parts 
+		blank = sympy.Array.zeros(*comm_H.shape)
+		single_one = lambda n: tuple(0 if i!=n else 1 for i in range(N))
+		N = len(relevant_symbols)
+		Mx_parts = decomposed_H.get(single_one(N-3),blank)
+		My_parts = decomposed_H.get(single_one(N-2),blank)
+		Mz_parts = decomposed_H.get(single_one(N-1),blank)
+		
+		if has_A_field:
+			Mx_parts = Mx_parts + decomposed_H.get(single_one(3*2+1),blank) - decomposed_H.get(single_one(3*1+2),blank) #dyAz-dzAy
+			My_parts = My_parts + decomposed_H.get(single_one(3*0+2),blank) - decomposed_H.get(single_one(3*2+0),blank) #dzAx-dxAz
+			Mz_parts = Mz_parts + decomposed_H.get(single_one(3*0+2),blank) - decomposed_H.get(single_one(3*2+0),blank) #dxAy-dyAx
+
+
+
+		raise NotImplementedError('todo: determine matrix of expression linear in the relevant symbols')
+
 
 		if precomputed_solution is None:
 			solution = self.solver.solve(self.envelope_model)

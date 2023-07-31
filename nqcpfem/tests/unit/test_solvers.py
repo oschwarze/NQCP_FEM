@@ -8,12 +8,24 @@ class MockEFM():
     def __init__(self):
         self.eigenvalues = np.arange(100)
         self.U = unitary_group.rvs(100)
+        self.sparse=False
         self.array = self.U @ np.diag(self.eigenvalues) @ self.U.conj().T
 
     def assemble_array(self, sparse=False):
-        return self.array
+        if not self.sparse:
+            return self.array
+        from scipy.sparse import csr_matrix
+        return csr_matrix(self.array)
+
 
     def make_S_array(self):
+        return 1
+    
+    def eigensolutions_to_eigentensors(self,eigensols):
+        return eigensols
+
+    @property
+    def energy_scale(self):
         return 1
 class TestScipySolver(TestCase):
     def setUp(self) -> None:
@@ -31,20 +43,21 @@ class TestScipySolver(TestCase):
 
 
 if __name__ == '__main__':
-    unit.main()
+    unittest.main()
 
 
 class TestPETScSolver(TestCase):
     def test_solve(self):
-        from .test_fenics import setup
-        setup(self)
 
-
-
+        
 
         from nqcpfem.solvers import PETScSolver
         solver = PETScSolver(k=10,sigma=0)
-        solution = solver.solve(self.box_model)
+        
+        model = MockEFM()
+        model.sparse = True 
+        
+        solution = solver.solve(model)
         from nqcpfem import _hbar,_m_e
         import numpy as np
         Lx = 1e-6

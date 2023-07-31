@@ -162,7 +162,13 @@ class TestFEniCsModel(unittest.TestCase):
         self.assertIs(self.model.ufl_form(),old_form.value)
         self.assertEqual(self.model._saved_ufl_form._modified_time_,old_form._modified_time_)
         
-    
+    def test_projcet_operator(self):
+        self.fail('')
+        # assert that identity operator matches S operator
+        # assert operator A should be spinor problem  x**2 for spindown and spinup 
+        # we cannot do much more than verifying that the shape of this is correct and nothing coupls spinup and spindown
+        # sparsity pattern should be identical to S array. chekc this (exercise in sparsity patterns)
+        # operator kx**2 spin_up and x**2 spin down. chekc that nothing coupls spin up and spin down
 
 if __name__ == '__main__':
     unittest.main()

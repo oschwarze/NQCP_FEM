@@ -1,4 +1,5 @@
-from . import band_modeling, envelope_function
+from . import band_model as bm
+from . import envelope_function
 import numpy as np
 from . import _hbar
 from typing import Callable
@@ -56,8 +57,10 @@ class Observable(np.ndarray):
 
         l_vector_indices,tensor_indices,r_vector_indices = self._get_summation_indices_(vector.shape)
         expval = np.einsum(vector.conj(), l_vector_indices, self, tensor_indices, other_vector, r_vector_indices)
-        return np.real(expval)
 
+        if other_vector is vector: # expectation values of observables are always real
+            return np.real(expval) 
+        return expval # case for non-diagonal matrix elements
     def apply(self, vector, normalize=False):
         _,tensor_indices,vector_indices = self._get_summation_indices_(vector.shape)
         outcome = np.einsum(self, tensor_indices, vector, vector_indices)
@@ -100,26 +103,22 @@ def HH_projection(band_model):
     """
 
 
-    valid_band_models = (band_modeling.LuttingerKohnHamiltonian,)
-    if isinstance(band_model,band_modeling.ParticleHoleBandModel):
-        if band_model.band_model_class not in valid_band_models:
-            raise TypeError(f'ParticleHoleBandModel based on model {band_model.band_model_class} does not have a HH subspace')
-
-        observable = HH_projection(band_model.band_model_class)
-        return band_model.extend_observable(observable)
-
+    valid_band_models = (bm.LuttingerKohnHamiltonian,)
 
 
     if not (isinstance(band_model, valid_band_models) or band_model in valid_band_models):
         raise TypeError(f'band model does not have a HH subspace: got {band_model,type(band_model)}')
 
-    if isinstance(band_model, band_modeling.LuttingerKohnHamiltonian) or band_model == band_modeling.LuttingerKohnHamiltonian:
+    if isinstance(band_model, bm.LuttingerKohnHamiltonian) or band_model == bm.LuttingerKohnHamiltonian:
         hh_projection = np.zeros((4, 4), dtype='complex')
         hh_projection[0, 0] = 1
         hh_projection[3, 3] = 1
         observable = Observable(hh_projection, 0)
 
-
+    else:
+        raise TypeError(f'bnadmodel {band_model} was not of correct typ was not of correct typee')
+    
+    observable = __extend_if_needed__(observable,band_model)
     return observable
 
 
@@ -130,25 +129,20 @@ def LH_projection(band_model):
     :param band_model:
     :return:
     """
-    valid_band_models = (band_modeling.LuttingerKohnHamiltonian,)
-
-    if isinstance(band_model,band_modeling.ParticleHoleBandModel):
-        if band_model.band_model_class not in valid_band_models:
-            raise TypeError(
-            f'ParticleHoleBandModel based on model {band_model.band_model_class} does not have a HH subspace')
-
-        observable = LH_projection(band_model.band_model_class)
-        return band_model.extend_observable(observable)
+    valid_band_models = (bm.LuttingerKohnHamiltonian,)
 
     if not (isinstance(band_model, valid_band_models) or band_model in valid_band_models):
         raise TypeError(f'band model does not have a HH subspace: got {band_model,type(band_model)}')
 
-    if isinstance(band_model, band_modeling.LuttingerKohnHamiltonian)or band_model == band_modeling.LuttingerKohnHamiltonian:
+    if isinstance(band_model, bm.LuttingerKohnHamiltonian)or band_model == bm.LuttingerKohnHamiltonian:
         lh_projection = np.zeros((4, 4), dtype='complex')
         lh_projection[1, 1] = 1
         lh_projection[2, 2] = 1
         observable = Observable(lh_projection, 0)
 
+    else:
+        raise TypeError(f'bnadmodel {band_model} was not of correct typ was not of correct typee')
+    observable = __extend_if_needed__(observable,band_model)
     return observable
 
 def band_angular_momentum(band_model):
@@ -157,50 +151,35 @@ def band_angular_momentum(band_model):
     :param band_model:
     :return:
     """
-    from models import ANGULAR_MOMENTUM
-    valid_band_models = (band_modeling.LuttingerKohnHamiltonian, band_modeling.FreeFermion)
-
-
-    if isinstance(band_model, band_modeling.ParticleHoleBandModel):
-        if band_model.band_model_class not in valid_band_models:
-            raise TypeError(
-                f'ParticleHoleBandModel based on model {band_model.band_model_class} does not have a HH subspace')
-
-        observable = band_angular_momentum(band_model.band_model_class)
-        new_ops =band_model.extend_observable(observable)
-        return new_ops
-
+    from . import ANGULAR_MOMENTUM
+    valid_band_models = (bm.LuttingerKohnHamiltonian, bm.FreeFermion)
 
     if not (isinstance(band_model, valid_band_models) or band_model in valid_band_models):
         raise TypeError(f'band model does not have a HH subspac: got {type(band_model)}')
 
 
 
-    if isinstance(band_model, band_modeling.LuttingerKohnHamiltonian)or band_model == band_modeling.LuttingerKohnHamiltonian:
+    if isinstance(band_model, bm.LuttingerKohnHamiltonian)or band_model == bm.LuttingerKohnHamiltonian:
         AM = _hbar * ANGULAR_MOMENTUM['3/2']
-        return VectorObservable(AM, 0)
-    if isinstance(band_model, band_modeling.FreeFermion) or band_model == band_modeling.FreeFermion:
+        obs = VectorObservable(AM, 0)
+        obs = __extend_if_needed__(obs,band_model)
+        return obs
+    if isinstance(band_model, bm.FreeFermion) or band_model == bm.FreeFermion:
         AM = _hbar * ANGULAR_MOMENTUM['1/2']
-        return VectorObservable(AM, 0)
+        obs = VectorObservable(AM, 0)
+        obs = __extend_if_needed__(obs,band_model)
+        return obs
 
 
 def spin(band_model):
     from . import ANGULAR_MOMENTUM
-    valid_band_models = (band_modeling.LuttingerKohnHamiltonian, band_modeling.FreeFermion)
-
-    if isinstance(band_model, band_modeling.ParticleHoleBandModel):
-        if band_model.band_model_class not in valid_band_models:
-            raise TypeError(
-                f'ParticleHoleBandModel based on model {band_model.band_model_class} does not have a HH subspace')
-
-        observable = spin(band_model.band_model_class)
-        return band_model.extend_observable(observable)
+    valid_band_models = (bm.LuttingerKohnHamiltonian, bm.FreeFermion)
 
 
     if not (isinstance(band_model, valid_band_models) or band_model in valid_band_models):
         raise TypeError(f'band model does not have a spin space subspac: got {type(band_model)}')
 
-    if isinstance(band_model, band_modeling.LuttingerKohnHamiltonian) or band_model== band_modeling.LuttingerKohnHamiltonian:
+    if isinstance(band_model, bm.LuttingerKohnHamiltonian) or band_model== bm.LuttingerKohnHamiltonian:
         raise NotImplementedError(f'fixme. Spin operator wrongly defined.')
 
         sigmas = ANGULAR_MOMENTUM['1/2']
@@ -208,10 +187,10 @@ def spin(band_model):
         mat[:,1:3, 1:3] = _hbar * sigmas
         mat[:,np.array([[0, 0], [3, 3]]), np.array([[0, 3], [0, 3]])] = _hbar * sigmas
         return VectorObservable(mat, 0)
-    if isinstance(band_model, band_modeling.FreeFermion) or band_model == band_modeling.LuttingerKohnHamiltonian:
+    if isinstance(band_model, bm.FreeFermion) or band_model == bm.FreeFermion:
         AM = _hbar * ANGULAR_MOMENTUM['1/2']
-        return VectorObservable(AM, 0)
-
+        obs = VectorObservable(AM, 0)
+        obs = __extend_if_needed__(obs,band_model)
 
 def positional_probability_distribution(band_model) -> Callable:
     """
@@ -287,10 +266,9 @@ def gram_schmidt_orthogonalization(vectors, normalize=True):
 def particle_projector(band_model):
     """
     Projects onto subspace describing particle
-    :param band_modeling.ParticleHoleBandModel band_model: the band model which the eigenvectors belong to
+    :param bm.ParticleHoleBandModel band_model: the band model which the eigenvectors belong to
     :return:
     """
-    pass
     relevant_axis = band_model.particle_hole_axis
     axis_dim = band_model.tensor_shape[2*relevant_axis]
     particle_dims = [d for d in range(axis_dim) if d not in band_model.hole_indices]
@@ -307,7 +285,6 @@ def hole_projector(band_model):
     :param band_modeling.ParticleHoleBandModel band_model: the band model which the eigenvectors belong to
     :return:
     """
-    pass
     relevant_axis = band_model.particle_hole_axis
     axis_dim = band_model.tensor_shape[2 * relevant_axis]
     projector_arr = np.zeros((axis_dim, axis_dim), dtype='complex')
@@ -317,30 +294,148 @@ def hole_projector(band_model):
     return Observable(projector_arr, relevant_axis)
 
 
-def flip_spins(band_model):
+def flip_spins(band_model:bm.BandModel):
     """
     Defines an operator which flips the spins of the vector. This is usefull for when checking if two states are quivalent up to flipping of the spin
     :param band_modeling.BandModel band_model:
     :return:
     """
-    valid_band_models = (band_modeling.LuttingerKohnHamiltonian,band_modeling.FreeFermion)
-    if isinstance(band_model, band_modeling.ParticleHoleBandModel):
-        if band_model.band_model_class not in valid_band_models:
-            raise TypeError(
-                f'ParticleHoleBandModel based on model {band_model.band_model_class} does not have a HH subspace')
+    valid_band_models = (bm.LuttingerKohnHamiltonian,bm.FreeFermion)
 
-        observable = flip_spins(band_model.band_model_class)
-        return band_model.extend_observable(observable)
-
-    if isinstance(band_model,band_modeling.LuttingerKohnHamiltonian) or band_model == band_modeling.LuttingerKohnHamiltonian:
-        flip = band_modeling.time_reversal_operator(band_model)
+    if isinstance(band_model,bm.LuttingerKohnHamiltonian) or band_model == bm.LuttingerKohnHamiltonian:
+        flip = band_model.__time_reversal_change_of_basis__
         axis=0
 
-    elif isinstance(band_model,band_modeling.FreeFermion) or band_model == band_modeling.FreeFermion:
-        flip = band_modeling.time_reversal_operator(band_model)
+    elif isinstance(band_model,bm.FreeFermion) or band_model == bm.FreeFermion:
+        flip = band_model.__time_reversal_change_of_basis__
         axis=0
 
     else:
         raise NotImplementedError(f'band model {band_model} does not have a spin flip operation')
+    
+    
+    obs = Observable(flip,axis)
+        
+    obs = __extend_if_needed__(obs,band_model)
+    
+    return obs 
 
-    return Observable(flip,axis)
+
+def BdG_extended_observable(observable: Observable,band_model:bm.BandModel):
+    """
+    The function `BdG_extended_observable` takes an observable and a band model as input and returns an
+    extended version of the observable that includes its time-reversed counterpart.
+    
+    :param observable: The `observable` parameter is an object that represents a physical observable,
+    such as a matrix or a vector. It could be an instance of a class that inherits from the `Observable`
+    class
+    :type observable: Observable
+    :param band_model: The `band_model` parameter is an instance of the `BandModel` class. It represents
+    a model of a physical system with a band structure, such as a solid-state material. The `BandModel`
+    class typically contains information about the energy bands, lattice structure, and other properties
+    of the system
+    :type band_model: bm.BandModel
+    :return: an extended version of the input observable.
+    """
+    tr_operator = band_model.__time_reversal_change_of_basis__
+    if tr_operator is None:
+        return observable
+    else:
+        
+        o_index = tuple(range(len(observable.shape))) 
+        start_i = 1 if isinstance(observable,VectorObservable) else 0  # takes account of both observable and regular observable
+        
+        l_tr_index = (len(observable.shape),o_index[start_i])
+        r_tr_index = (o_index[start_i+1],len(observable.shape)+1)
+        tr_version = np.einsum(tr_operator,l_tr_index,observable,o_index,np.linalg.inv(tr_operator),r_tr_index)
+        
+        # direct sum of of O and time-reversed O:
+        
+        old_shape = observable.shape
+        N = old_shape[start_i]
+        M = old_shape[start_i+1]
+        
+        extended_shape = (old_shape[0],) if start_i else tuple()
+        extended_shape = extended_shape + (2*N,2*M) + old_shape[start_i+2:]
+        extended = np.zeros(extended_shape,dtype = observable.dtype)
+        
+        upper_left = (slice(0,old_shape[0],1),) if start_i else tuple()
+        upper_left = upper_left + (slice(0,N),slice(0,M))
+        lower_right = (slice(0,old_shape[0],1),) if start_i else tuple()
+        lower_right = lower_right + (slice(N,2*N,1),slice(M,2*M,1))
+        
+        extended[upper_left] = observable
+        extended[lower_right] = tr_version
+        
+        return observable.__class__(extended,observable.tensor_index)
+        
+
+def __extend_if_needed__(obs,band_model):
+    """
+    The function extends an observable if the corresponding band_model has been BdG extended
+    
+    :param obs: The `obs` parameter is an observable object that represents a physical quantity or
+    measurement in a quantum system. It could be a single observable or a list of observables
+    :param band_model: The `band_model` parameter is an instance of the `BandModel` class
+    :return: the variable `obs`.
+    """
+    if isinstance(band_model,bm.BandModel) and band_model.independent_vars['postprocessing_function_specification'].get('BdG',None) is not None:
+        # extend the operator
+        obs = BdG_extended_observable(obs,band_model)
+    
+    return obs
+
+
+
+class MomentumObservable():
+    def __init__(self,envelope_model,direction,order):
+
+        self.k_operator = envelope_model.k_operator(direction,order)
+        self.envelope_model = envelope_model
+        self.direction = direction
+        self.order = order
+        
+        
+    def mel(self,vector,other_vector=None):
+        """
+        The function `mel` calculates the matrix of the operator between tow vectors
+        :param vector: The `vector` parameter represents a vector that will be used in the calculation.
+        It is expected to be a numpy array.
+        :param other_vector: The parameter "other_vector" is an optional parameter that represents a
+        second vector. If this parameter is not provided, the function assumes that the second vector is
+        the same as the first vector (i.e., "vector")
+        :return: the result of applying the momentum operator to the given vectors. If the
+        `other_vector` parameter is not provided, the function assumes that the operator is being
+        applied to the same vector (`vector`) and returns the real part of the result. If the
+        `other_vector` parameter is provided, the function returns the complex result.
+        """
+        pass
+        if other_vector is None:
+            diagonal = True
+            other_vector = vector
+        else:
+            diagonal = False
+        # we need to flatten the vectors before applying the momentum operator
+        vector = vector.flatten() 
+        other_vector = vector.flatten()
+
+        res = vector.conjugate().T @ self.k_operator @ other_vector
+        if diagonal:
+            return np.real(res)
+        return res
+    
+    def apply(self,vector):
+        """
+        The function applies a linear operator to a vector and returns the result.
+        
+        :param vector: The `vector` parameter is a numpy array representing a vector
+        :return: the result of applying the k_operator to the flattened vector and reshaping it back to
+        the original shape.
+        """
+        
+        
+        shape = vector.shape
+        vector = vector.flatten()
+        res = self.k_operator @ vector
+        return res.reshape(shape)
+    

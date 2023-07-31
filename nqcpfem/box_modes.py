@@ -31,7 +31,10 @@ class BoxEFM(EnvelopeFunctionModel):
         if not isinstance(domain,RectangleDomain):
             raise TypeError(f'unsupported domain type. Only `RectangleDomain` is supported, got: {domain} ({type(domain)})')
         super().__init__(band_model, domain,**{'nx':nx,'ny':ny,'nz':nz})
-
+    
+    @property
+    def k_signature(self) -> str:
+        return 'all right'
     @auto_update
     def potential_matrix(self, sparse=True):
         """
@@ -525,6 +528,10 @@ class BoxEFM(EnvelopeFunctionModel):
     def make_S_array(self):
         return 1  # identity as modes are orthogonal
 
+    def project_operator(self, operator):
+        raise NotImplementedError('todo')
+        return super().project_operator(operator)
+    
 def __k_mat__(order, L, n_modes):
     """
     compute matrix version of k operator for box modes

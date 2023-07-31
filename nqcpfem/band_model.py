@@ -134,6 +134,13 @@ class BandModel(UpdatableObject):
         
         return      
 
+    
+    #region properties for acessing independent_vars
+    @property
+    def parameter_dict(self):
+        return self.independent_vars['parameter_dict']
+    #endregion
+    
     # region postprocessing and building  / casting    
     
     #region array_shape properties
@@ -360,7 +367,7 @@ class BandModel(UpdatableObject):
         commuting_momentum_symbols = sympy.symbols(__MOMENTUM_NAMES__) # these are the commuting momentum symbols which are in the numerical version of the Hamiltonian
         #array =   self.post_processed_array().subs({k:ck for k,ck in zip(self.momentum_symbols,commuting_momentum_symbols)}).subs({sympy.symbols(r'\hbar'):sympy.symbols('hbar')}) # \hbar breaks lambdify so we replace with a working name :( 
         
-        disassemble_dict = self.__make_tensor_dict__(self.post_processed_array()) # we do not need commuting Ks anymore
+        disassemble_dict = self.__make_tensor_dict__(self.post_processed_array(),self.spatial_dim) # we do not need commuting Ks anymore
         
 
         return disassemble_dict
@@ -370,11 +377,11 @@ class BandModel(UpdatableObject):
         """
         Constructs a tensor representation of the model where the Ks are replaced with indices in a tensor. The resulting dict contains numpy arrays of complex numbers.
         """
-        disassemble_dict = self.__make_tensor_dict__(self.numerical_array())
+        disassemble_dict = self.__make_tensor_dict__(self.numerical_array(),self.spatial_dim)
         return disassemble_dict
     
-    
-    def __make_tensor_dict__(self,array,force_recompute:bool=False,):
+    @staticmethod
+    def __make_tensor_dict__(array,spatial_dim):
         """Constructs a dictionary where the keys are are integers and elements are arrays of shape `self.tensor_shape`. The keys indicate how many factor of the momentum operators are in front of the specified tensor.
 
         :params force_recompute: Whether to force the recomputation of the array or not. Defaults to False.
@@ -382,8 +389,8 @@ class BandModel(UpdatableObject):
 
         Returns: dict[int,np.ndarray]: dictionary with the Hamiltonian split up into coefficients in front of k operators
         """
-        
-        
+        from . import symbolic as symb 
+        momentum_symbols = (symb.Kx,symb.Ky,symb.Kz)
         
         
         disassemble_dict = {} # dict containing tensors corresponding to the respective order
@@ -411,11 +418,11 @@ class BandModel(UpdatableObject):
                 
                 k_signature = k_component_signature(expand_term(term))
                 print(term,k_signature,expand_term(term))
-                arr = disassemble_dict.get(len(k_signature),np.zeros(self.tensor_shape+(self.spatial_dim,)*(len(k_signature)),'O'))
+                arr = disassemble_dict.get(len(k_signature),np.zeros(array.shape+(spatial_dim,)*(len(k_signature)),'O'))
                 # k-s commute, and by convention we will always order them as k_x k_x ... k_x k_y k_y ... k_y k_z k_z ... k_z
-                arr_i = np.unravel_index(i,self.tensor_shape)+tuple(k_signature)
+                arr_i = np.unravel_index(i,array.shape)+tuple(k_signature)
                 term = term.subs({sympy.symbols(r'\hbar'):sympy.symbols('hbar')})
-                addition =   sympy.lambdify(self.momentum_symbols,term)(1,1,1) if len(k_signature) else term 
+                addition =   sympy.lambdify(momentum_symbols,term)(1,1,1) if len(k_signature) else term 
                 arr[arr_i] += addition*sympy.Mul(*piecewise_parts) # add the piecewise parts back on again
 
                 # add coefficient to array

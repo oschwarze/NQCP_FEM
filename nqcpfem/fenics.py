@@ -1,7 +1,8 @@
-from re import A
-from . import band_model,envelope_function
+from . import envelope_function
 from .updatable_object import ComputedAttribute,AttributeSnapshot,auto_update
 from .envelope_function import Domain
+from . import band_model as bm
+from . import symbolic as symb
 import numpy as np
 import sympy
 from typing import List,Tuple
@@ -53,6 +54,10 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                             'function_class':function_class}
         
         super().__init__(**independent_vars)
+    
+    @property
+    def k_signature(self):
+        return 'FEM'
         
     def __getstate__(self):
         state = super(FEniCsModel, self).__getstate__()
@@ -228,7 +233,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         pos_syms = self.band_model.position_symbols
         variables.update({pos_syms[i]:fem_x[i] for i in range(self.band_model.spatial_dim)}) # type: ignore
         constants = self.dolfinx_constants()
-        for sym,func in self.band_model.independent_vars['functions'].items():
+        for sym,func in self.band_model.post_processed_functions().items():
             # convert the functions if they are sympy expresseions. If they are callable, we just use the spatial coordinate of dolfinx
             if isinstance(func,sympy.Piecewise):
                 # we have to traverse through any sympy piecewise functions and convert them, since UFL stuff cannot handle regular comparison operators. 
@@ -276,8 +281,6 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         
         import ufl
 
-        u = ufl.TrialFunction(self.function_space())
-        v = ufl.TestFunction(self.function_space())
 
         is_scalar_problem = self.independent_vars['band_model'].tensor_shape == (1,1)
         
@@ -293,7 +296,12 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         self.__constants__ = new_param_dict
 
         ufl_tensors = {}
-        for rank,tensor in self.band_model.symbolic_tensor_repr().items():
+        
+        # make symbolic array with ENFORCED ordering of the Ks (one k acting on the trial_function and the rest acting on the test-function)
+        from .symbolic import arange_ks_array
+        symbolic_ordered_array = arange_ks_array(self.band_model.post_processed_array(),self.k_signature)
+        symbolic_tensor = self.band_model.__make_tensor_dict__(symbolic_ordered_array,self.band_model.spatial_dim)
+        for rank,tensor in symbolic_tensor.items():
             
             # we first substitute everything into, then scale by the relevant parameters.
             
@@ -326,7 +334,23 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                     raise ufl.UFLException(f'trying to cast a tensor (type {type(normalized_tensor)} as ufl failed:\n') from err
             ufl_tensors[rank] = ufl_version
         # L(u,v) = <u,Hv>
+        L = self.__ufl_tensor_dict_to_form__(ufl_tensors)
+        return L
+    def __ufl_tensor_dict_to_form__(self,ufl_tensors):
+        """
+        The function `__ufl_tensor_dict_to_form__` takes a dictionary of UFL tensors and converts them
+        into a UFL form.
+        
+        :param ufl_tensors: The `ufl_tensors` parameter is a dictionary where the keys are integers
+        representing the rank of the tensor, and the values are UFL tensors. UFL tensors are symbolic
+        expressions used in the Unified Form Language (UFL) for defining finite element forms
+        :return: the form `L`, which is a UFL expression representing a linear form.
+        """
+        import ufl
+        u = ufl.TrialFunction(self.function_space())
+        v = ufl.TestFunction(self.function_space())
         L = None
+        is_scalar_problem = self.independent_vars['band_model'].tensor_shape == (1,1)
         for rank,ufl_tensor in ufl_tensors.items():
             # assume grouped ordering of the indices so [aL,aR,bL,bR,...,x1,x2,x3,...] where the last x axes are the spatial ones
 
@@ -353,6 +377,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 L+= term
 
         return L
+    
     
     @auto_update
     def bilinear_form(self,overwrite=False):
@@ -537,7 +562,106 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         from scipy.sparse import  csr_matrix
         return csr_matrix(A.getValuesCSR()[::-1]) # return as scipy sparse matrix
 
+    def k_operator(self,direction,order):
+        
+        if isinstance(direction,int):
+            direction = [direction]
+        
+        if isinstance(order,int):
+            order = [order]
+        
+        if len(direction) != len(order):
+            raise ValueError(f'number of directions must mach numer of orders: {len(direction)} vs. {len(order)}')
+        
+        
+        u = ufl.TrialFunction(self.function_space())
+        v = ufl.TestFunction(self.function_space())
 
+        # create list of derivative instructions:
+        derivatives = sum(([d for _ in range(o)] for o,d in zip(order,direction)),[])
+        vector_rank = int(len(self.independent_vars['band_model'].tensor_shape)/2)
+        I = ufl.indices(vector_rank)
+        uu = u if self.independent_vars['band_model'].tensor_shape == (1,1) else u[I] #scalar case 
+        
+        
+        vv = v if self.independent_vars['band_model'].tensor_shape == (1,1) else v[I] #scalar case 
+        
+        
+    
+        du = -1j*uu.dx(derivatives[0])
+        dv = ufl.conj(vv)
+        for k in derivatives[1:]:
+            dv = 1j*dv.dx(k)
+        
+        L = du*dv*ufl.dx
+
+        form = dolfinx.fem.form(L)
+        A = dolfinx.fem.petsc.assemble_matrix(form,self.dolfin_bc())
+        A.assemble()
+
+
+        from scipy.sparse import  csr_matrix
+        return csr_matrix(A.getValuesCSR()[::-1]) # return as scipy sparse matrix
+
+    
+    def project_operator(self,operator):
+
+        # TODO:
+        # - extract making the UFL_form to take dict of UFL ready tensors (k_rank as keys) and return the form
+        # - make dict for Ks and Xs polynomial and plug in the interpoloated X operators in the x-place to construct UFL ready tensors
+        # - if it is pure X, we need not make UFL form so we can skip that part
+        # 
+        
+        # test: passing the identity should not take a shortcut but do the full computation and result in the same thing as the S_array
+        
+        symbols = (symb.X,symb.Y,symb.Z,symb.Kx,symb.Ky,symb.Kz)
+        
+        
+        if not all(s in symbols for s in operator.free_symbols):
+            raise ValueError(f'only alloed symbols are {symbols} but operator had symbols: {operator.free_symbols}')
+        
+        # cast as FEM form (in this form we directly know that the Ks only act on the trial and test function)
+        aranged_O = symb.arange_ks_array(operator,self.k_signature)
+        
+        tensor_repr = bm.BandModel.__make_tensor_dict__(aranged_O,self.band_model.spatial_dim)
+        
+        # bring the tensors to the correct shape.
+        
+        ufl_tensors = {}
+        for order,arr in tensor_repr.items():
+            
+            # replace the x,y,z with ufl.SpatialCoordinate. This is done by treating expressions in arr as polynomials of x,y,z and replacing it according to polynomial order
+            arr = sympy.Array(arr)
+            x_order_dict = symb.array_sort_out_polynomials(symb.enforce_commutativity(arr),sympy.symbols('x,y,z'))
+            big_tensor = np.zeros(arr.shape) 
+            for x_orders,coeff in x_order_dict.items():
+                tensor = np.array(coeff).astype(np.complex128)
+                X = ufl.SpatialCoordinate(self.mesh())
+                for i,xo in enumerate(x_orders):
+                #for each array_constant add the position expression according to the order
+                    if xo:
+                        tensor *= X[i]**xo
+                big_tensor += tensor
+            
+            ufl_tensors[order] = ufl.as_tensor(big_tensor)
+            
+        
+        form = self.__ufl_tensor_dict_to_form__(ufl_tensors)
+        assembled_array = dolfinx.fem.form(form)
+        
+        A = dolfinx.fem.petsc.assemble_matrix(assembled_array,self.dolfin_bc())#diagonal=1234e10)
+        A.assemble()
+
+        from scipy.sparse import  csr_matrix
+        array = csr_matrix(A.getValuesCSR()[::-1]) # return as scipy sparse matrix
+        # set boundary diagonals to zero
+        
+        #evaluate the form
+        
+        return array   
+                
+    
+    
 def make_function_space(domain,spatial_dim,function_class=('CG',1),shape=(1,),scale_factor=1):
     """
     Makes a function space over a domain.

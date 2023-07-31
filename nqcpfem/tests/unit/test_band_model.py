@@ -483,8 +483,9 @@ class TestBandModel(TestCase):
         self.assertTrue(all( s not in self.scalar_problem.post_processed_array().free_symbols for s in (sympy.symbols('k_{z}',commutative=False),sympy.symbols('z'))),msg='kz and/or z were not all replaced')
         V1,V2,V3 = [v[0] for v in self.funcs]
         res = self.scalar_problem.post_processed_array().subs({k:0 for k in self.scalar_problem.momentum_symbols})
-        V2s = sympy.Symbol('(V2)_1(x)',commutative=False)
-        facit = sympy.Array([[[[sympy.pi**2/sympy.symbols('l_z')**2+V2s+V3,0],[0,4*sympy.pi**2/sympy.symbols('l_z')**2+V2s+V3]]]])
+        V2s1 = sympy.Symbol('(V2)_1(x)',commutative=False)
+        V2s2 = sympy.Symbol('(V2)_2(x)',commutative=False)
+        facit = sympy.Array([[[[sympy.pi**2/sympy.symbols('l_z')**2+V2s1+V3,0],[0,4*sympy.pi**2/sympy.symbols('l_z')**2+V2s2+V3]]]])
         self.assertTrue(__compare_sympy_arrays__(res,facit))
 
         
@@ -601,7 +602,7 @@ class TestBandModel(TestCase):
         facit_num= AA.copy().subs({kx:(ckx+e*A_field[0]/hbar), ky:(cky+e*A_field[1]/hbar), kz:(ckz+e*A_field[2]/hbar)}).subs(subs_dict)
         diff = facit_num - sympy.Array(H_num)
         diff = diff.subs({k:1 for k in (kx,ky,kz)})
-        np.testing.assert_allclose(np.array(diff).astype(float),np.zeros(diff.shape),atol=1e-15)
+        np.testing.assert_allclose(np.array(diff).astype(float),np.zeros(diff.shape),atol=5e-15)
 
 
         

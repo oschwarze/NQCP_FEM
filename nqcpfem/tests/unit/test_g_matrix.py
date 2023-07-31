@@ -53,8 +53,8 @@ class TestGMatrix(TestCase):
         self.box_models={'FreeParticle': BoxEFM(self.box_band_models['FreeParticle'],self.domain,n_modes,n_modes,n_modes),
                         'LK':BoxEFM(self.box_band_models['LK'],self.domain,n_modes,n_modes,n_modes)}
 
-        self.box_models['FreeParticle'].add_potential(ho_potential)
-        self.box_models['LK'].add_potential(ho_potential)
+        self.box_models['FreeParticle'].band_model.add_potential(ho_potential)
+        self.box_models['LK'].band_model.add_potential(ho_potential)
 
 
         from nqcpfem.solvers import PETScSolver,ScipySolver
@@ -87,7 +87,7 @@ class TestGMatrix(TestCase):
         facit_U,facit_sigma,facit_Vdagger = np.linalg.svd(facit)
 
         for efm_dict,name in zip([self.box_models,self.fenics_models],['box_efm','fenics_efm']):
-           # if name == 'box_efm':
+            # if name == 'box_efm':
 
             #    continue
             LOG.info(f'gmatrix test for FreeFermion using {name}:')
@@ -160,6 +160,7 @@ class TestGMatrix(TestCase):
                 self.assertAlmostEqual(gmatrix_gap,gap,msg=f'LK model for {name}: magnetic field {Bvec} ({n}/{self.N_B_sample_points}) did not produce correct energy gap.')
                 from nqcpfem import UNIT_CONVENTION as U
                 print(f'{name}: expected gap {gmatrix_gap*U["J to eV"]}, determined gap {gap*U["J to eV"]} eV')
+            
     def test_matrix(self):
         self.fail()
     def test_derivative(self):

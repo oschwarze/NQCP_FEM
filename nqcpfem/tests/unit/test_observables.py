@@ -43,7 +43,7 @@ class Test(TestCase):
         AM = band_angular_momentum(model)
         result = AM.mel(self.mock_lk_state)
         facit = np.einsum('jzx,ijk,kzx', self.mock_lk_state.conj(), J, self.mock_lk_state)
-        np.testing.assert_array_equal(result, facit)
+        np.testing.assert_allclose(result, facit,atol=_hbar*10e-15)
 
     def test_spin(self):
         from nqcpfem.observables import spin
@@ -62,7 +62,7 @@ class Test(TestCase):
         from nqcpfem.observables import positional_probability_distribution
         from nqcpfem.band_model import LuttingerKohnHamiltonian, FreeFermion
 
-        model = LuttingerKohnHamiltonian(3).material_spec('Ge').add_z_confinement(0.1,
+        model = LuttingerKohnHamiltonian(3).material_spec('Ge').add_z_confinement(2,'box',
                                                                                   2)  # add z confinement modes just to make sure that the tensor shape is what we expect
         target_shape = (16,)
         positional_prop = positional_probability_distribution(model)

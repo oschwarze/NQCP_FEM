@@ -52,11 +52,26 @@ class TestSymbolicFunctions(TestCase):
         
         res_array = res[0].subs(res[1]) 
         # off diagonal should be # off diagonal should be  ... (WHAT)
-        self.assertEqual(res_array[0,1],-(4/(3*sympy.pi))**2*L)
-        self.assertEqual(res_array[1,0],-(4/(3*sympy.pi))**2*L)
-        self.assertEqual(res_array[1,0],-(2*3/(3*sympy.pi))**2*L)
+
+        #self.assertEqual(res_array[0,1],-(4/(3*sympy.pi))**2*L)
+        #self.assertEqual(res_array[1,0],-(4/(3*sympy.pi))**2*L)
+        #self.assertEqual(res_array[1,0],-(2*3/(3*sympy.pi))**2*L)
         
-        self.fail()
+        import numpy as np
+        F = X+np.pi*Y
+        FF = SymbolicFunction(F,'F(x)')
+        L = sympy.symbols('L')
+        res = FF.project_to_basis(0,3,L=L)
+        # diagonal should not vanish here but be replaced by a function
+        replacement = sympy.Symbol('(F)_1(x)',commutative=False)
+        self.assertEqual(res[0][0,0],replacement)
+        self.assertEqual(res[0][1,1],replacement)
+        self.assertEqual(res[0][2,2],replacement)
+        
+        self.assertEqual(res[1][replacement],np.pi*Y)
+
+        
+        self.fail('check off diagonals as well')
     
 
 class TestNumericalFunction(TestCase):
