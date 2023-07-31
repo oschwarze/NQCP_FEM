@@ -1,4 +1,4 @@
-from typing import Iterable
+from typing import Callable,Sequence,Iterable
 import sympy
 from .symbolic import __POSITION_NAMES__,derivative_of_function,sort_out_polynomials,extract_valid_bipartition_part,symbolize_array
 import logging
@@ -302,15 +302,18 @@ def box_well_matrix(n_modes,omega,m,L):
         m += 1
 
         with np.errstate(divide='ignore', invalid='ignore'):  # supress divide by zero error
-            diagonal = L ** 2 / (12 * np.pi ** 2 * n ** 2) * (np.pi ** 2 * n ** 2 - 6)
-            off_diagonal = (1 + (-1) ** (n + m)) * 2 * L ** 2 / (np.pi ** 2 * (m ** 2 - n ** 2) ** 2) * n * m
+            diagonal = 1 / (12 * np.pi ** 2 * n ** 2) * (np.pi ** 2 * n ** 2 - 6)
+            off_diagonal = (1 + (-1) ** (n + m)) * 2/ (np.pi ** 2 * (m ** 2 - n ** 2) ** 2) * n * m
 
         return np.where(n == m, diagonal, off_diagonal)
 
-        matrix = np.fromfunction(V_mel, (n_modes, n_modes), dtype='O')
+    matrix = np.fromfunction(V_mel, (n_modes, n_modes), dtype=float)
 
-        return sympy.Array(matrix) * 0.5*m*omega**2
+    return sympy.Array(matrix) * 0.5*m*omega**2*L**2
 
+    
+    
+    
 @lru_cache(maxsize=8)
 def box_linear_matrix(L,n_modes):
     """
@@ -424,8 +427,8 @@ def numerically_evaluate_numerical_elements(expression,integration_range,basis_f
     :return: a numpy array of the results of the numerical evaluation of the expression for each
     combination of n and m in the given range of N_modes. The shape of the array is N_modes x N_modes.
     """
-    from scipy import integrate
     import numpy as np
+    from scipy import integrate
     from itertools import product
     
     #TODO: parallelize
@@ -436,8 +439,48 @@ def numerically_evaluate_numerical_elements(expression,integration_range,basis_f
         results.append(integrate.quad(function,integration_range[0],integration_range[1])[0])
         
     return sympy.Array(results).reshape(N_modes,N_modes)
+
+
+def numerically_integrate(func:Callable,integration_range:Sequence,integration_method='scipy'):
     
+    from functools import partial
+    def nested_integration(f,int_range):
+        def integrand(*p):
+            return numerically_integrate(partial(f,*p),int_range,integration_method)
+
+        return integrand
+    
+    ranges = list(integration_range) 
+    if isinstance(integration_range[0],Sequence):   
+        # we have to integrate coordinate-wise
+        this_function = func
+        while len(ranges):
+            this_range = ranges.pop(-1) # integrate arguments from right to left, so that we can use partial to assign the left-most args to variables
+            this_function = nested_integration(this_function,this_range)
+        return this_function() # the last function should not need any arguments (all args should have been integrated out)    
+                
+    if integration_method =='scipy':
+        from scipy import integrate
+        return integrate.quad(func,integration_range[0],integration_range[1])[0]
+    else:
+        raise NotImplementedError(f'{integration_method} not implemented.')
+
+def numerically_compute_matrix(integrand_constructor,intergration_range,N_modes):
+    
+    mode_ranges = []
+    for n in N_modes:
+        mode_ranges.extend([np.arange(n),np.arange(n)])
+    
+    mode_grid = np.meshgrid(*mode_ranges)
+    
+    raise NotImplementedError('TODO: questionable whether this is even numerically feasable (poor scaling)')
+
+
+
 #endregion
+
+
+
 
 class NumericalFunction(Function):
 

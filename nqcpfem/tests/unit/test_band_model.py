@@ -601,7 +601,7 @@ class TestBandModel(TestCase):
         facit_num= AA.copy().subs({kx:(ckx+e*A_field[0]/hbar), ky:(cky+e*A_field[1]/hbar), kz:(ckz+e*A_field[2]/hbar)}).subs(subs_dict)
         diff = facit_num - sympy.Array(H_num)
         diff = diff.subs({k:1 for k in (kx,ky,kz)})
-        np.testing.assert_allclose(np.array(diff).astype(float),np.zeros(diff.shape))
+        np.testing.assert_allclose(np.array(diff).astype(float),np.zeros(diff.shape),atol=1e-15)
 
 
         

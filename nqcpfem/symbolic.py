@@ -192,7 +192,7 @@ def construct_target_signature(term,signature_type):
     elif signature_type == 'FEM':
         return [True]*(Nks-1) + [False]*(len(term)-Nks) + [True]
     
-def arange_ks_array(array,signature_type,signature_reduction_direction='left'):
+def arange_ks_array(array,signature_type:str,signature_reduction_direction:str='left'):
     """Given a sympy array containing expressions as entries, rearranges all the elements to acieve the correct signature
 
     
@@ -255,7 +255,7 @@ def sort_out_polynomials(expression,symbols):
     ordering of the symbols.
     
     :param expression: The `expression` parameter is the polynomial expression that you want to sort
-    out. It can be any valid polynomial expression in terms of the given symbols
+    out. It can be any valid polynomial expression in terms of the given symbols (including sympy.Add)
     :param symbols: The `symbols` parameter is a list of symbols that represent the variables in the
     polynomial expression. These symbols should be commutative in order for the expression to be treated as a polynomial in them.
     :return: The function `sort_out_polynomials` returns a list of tuples. Each tuple contains two
@@ -280,10 +280,9 @@ def sort_out_polynomials(expression,symbols):
                     not_poly = sympy.Add(*(a for a in ex.args if not a.is_polynomial(sym)))
                     is_poly = sympy.Add(*(a for a in ex.args if a.is_polynomial(sym)))
                     new_exprs.append((expr[0]+(None,),not_poly))
-                    print(not_poly,is_poly)
                     ex = is_poly
                 else:
-                    new_exprs.append((expr[0]+(None,),ex)) # not polynomial # not polynomial
+                    new_exprs.append((expr[0]+(None,),ex)) # not polynomial 
             
             if ex.is_constant(sym):
                 new_exprs.append((expr[0]+(0,),ex))
@@ -298,7 +297,7 @@ def sort_out_polynomials(expression,symbols):
     return [ e for e in exprs if e[1]!=0]
         
 
-def extract_valid_bipartition_part(expr):
+def extract_valid_bipartition_part(expr,func_dict=None):
     """Extracts the bipartition-parts of an expression for which there exists analytically solved matrix representations
     :param expr: _description_
     :type expr: sympy.Piecewise
@@ -306,7 +305,15 @@ def extract_valid_bipartition_part(expr):
     
     Returns as list of all the atomic piecewise functions (1 if X_i>0, 0 else ) for X_i = x,y,z, as well as the remaining factor 
     """
-    xx,yy,zz = sympy.symbols('x,y,z') # commuting ones so that we can use the min the relations
+    
+    if not isinstance(expr,sympy.Piecewise):
+        return None,expr
+    
+    if func_dict is None:
+        func_dict = {}
+    
+    
+    xx,yy,zz = sympy.symbols('x,y,z') # commuting ones so that we can use them in the relations defining the piecewise
     atomic_relations = ((xx>0,xx>=0),(yy>0,yy>=0),(zz>0,zz>=0))
 
     valid_relations = {r[0] for r in atomic_relations}
@@ -336,6 +343,12 @@ def extract_valid_bipartition_part(expr):
             continue
         if arg[1] in valid_relations:
             present_syms = arg[1].free_symbols.intersection(set(position_symbols))
+            # check for functions and add their corresponding syms as well
+            present_funcs = [func_dict[f] for f in arg[1].free_symbols if f in func_dict.keys()]
+            xs = [f.spatial_dependencies for f in present_funcs]
+            for xset in xs:
+                present_syms.update(xset)
+            
             valid_syms = [p  for p in present_syms if p not in arg[0].free_symbols]
             for p in valid_syms:
                 # evaluate the bipartition directions analytically
@@ -343,6 +356,7 @@ def extract_valid_bipartition_part(expr):
                 
                 remains = arg[0]
             else:
+                #WHAT SHOULD THIS DO???
                 remains = expr.subs({p:1 for p in valid_syms}) # ignore all peacewise for the valid ones
         else:
             remains = expr
@@ -378,6 +392,19 @@ def dummify_non_commutative(expr):
     as the corresponding free symbols.
     """
     return {s:sympy.Dummy(**s.assumptions0) for s in expr.free_symbols}
+
+
+def present_functions(expr):
+    """
+    The function `present_functions` returns a set of symbols that are present in the expression `expr`
+    and have a name ending with `(x)`.
+    
+    :param expr: The `expr` parameter is expected to be a mathematical expression or equation
+    :return: The function `present_functions` returns a set of symbols that are present in the
+    expression `expr` and have a name ending with `(x)`.
+    """
+    
+    return {f for f in expr.free_symbols if f.name[-3:] == '(x)'}
 
     
 def symbolize_array(array,symbol_base_name):

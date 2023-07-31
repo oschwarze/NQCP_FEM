@@ -14,7 +14,7 @@ class TestBoxEFM(TestCase):
 		self.Lx = L
 		self.Ly = L
 		self.Lz = L
-		self.band_model = FreeParticle(self.mass, 3)
+		self.band_model = FreeBoson(self.mass, 3)
 		self.domain = RectangleDomain(self.Lx, self.Ly, self.Lz)
 		self.model = BoxEFM(self.band_model, self.domain, *self.n_modes)
 
@@ -44,6 +44,8 @@ class TestBoxEFM(TestCase):
 		A = self.model.assemble_array(sparse=False)
 		evals, evecs = np.linalg.eigh(A)
 
+		# check that the eigenvalues are correct
+		
 		# region plotting the solutions
 		""" #
 		from matplotlib import pyplot as plt
@@ -60,7 +62,6 @@ class TestBoxEFM(TestCase):
 		"""
 		# endregion
 
-		self.fail(msg='fix 2D models not getting correct potential shapes!')
 
 
 		# region evaluating
@@ -72,8 +73,11 @@ class TestBoxEFM(TestCase):
 
 		exact_values = np.sort(np.fromfunction(exact_energies,self.n_modes).flatten())
 		np.testing.assert_allclose(evals,exact_values)
-		# endregion
-		return
+		
+		# check that that the evecs are just a permutation of the identity (box-modes are eigenstates of this Hamiltonian)
+		x_i,y_i = np.where(evecs!=0)
+		np.testing.assert_array_equal(x_i,np.arange(x_i.shape[0]))
+		np.testing.assert_array_equal(np.sort(y_i),np.arange(y_i.shape[0]))
 
 	def test_eigensolutions_to_eigentensors(self):
 		import numpy as np
