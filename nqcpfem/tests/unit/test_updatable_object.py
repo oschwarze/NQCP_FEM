@@ -228,3 +228,7 @@ class TestIndependentAttribute(TestCase):
         test2.independent_vars['a'] = -100
         self.assertEqual(ex2.A2(),1)
         
+    
+    
+    def test_method_with_arguments(self):
+        self.fail('todo: make version of auto_update which requires hasable arguments to be passed to the method but keeps a dict of the stored values and invalidates all of them (resets the dict) if something is updated')

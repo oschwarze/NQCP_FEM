@@ -162,8 +162,8 @@ class PETScSolver(ModelSolver):
 			petsc_S = None
 		else:
 			petsc_S = PETSc.Mat().createAIJ(size=S.shape,csr=(S.indptr,S.indices,S.data))
+			petsc_S.assemble()
 
-		petsc_S.assemble()
 		petsc_A.assemble()
 
 

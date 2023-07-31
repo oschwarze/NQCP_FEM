@@ -2,6 +2,7 @@ from abc import ABC,abstractmethod
 from dataclasses import dataclass
 from .band_model import BandModel
 from .updatable_object import UpdatableObject,auto_update
+from typing import Sequence
 class Domain():
     def __post_init__(self):
         self.mesh = None
@@ -41,12 +42,20 @@ class EnvelopeFunctionModel(UpdatableObject,ABC):
     def domain(self)->Domain:
         return self.independent_vars['domain']
 
+    @property
+    @abstractmethod
+    def k_signature(self) -> str:
+        # return the desired K-ordering for this type of envelope function.
+        pass
+    
         
     @abstractmethod
     @auto_update
     def assemble_array(self,sparse=True):
         """
-        Computes a Hamiltonian that can be passed to a solver
+        Computes a Hamiltonian that can be passed to a solver.
+        This is in fact just a special (very common) case of project_operator where the operator to project is the Hamiltonian.
+        We make it a special method to allow for saving of the result (and only updating necessary parts)
         :return:
         """
         raise NotImplementedError
@@ -76,9 +85,28 @@ class EnvelopeFunctionModel(UpdatableObject,ABC):
         Method for making the S array in terms of the relevant basis functions.
         S_ij = <i|j>
         :return:
+        
+        # this is in fact just a special case of the project_operator,  where the operator to project is the identity
         """
+        
+        
+        
         raise NotImplementedError
 
+    @abstractmethod
+    def project_operator(self,operator):
+        """
+        Projects the operator down to the states used in the envelope function model.
+        The operators is assumed to be a sympy array of number and the only free symbols being X,Y,Z kx,ky,kz
+        
+        in general the process is as follows:
+            the ks are rearanged to the desired signature specified by self.k_signature
+            
+        
+        """
+        pass
+    
+    
     def __getstate__(self):
         state = self.__dict__.copy()
         state['_array'] = None

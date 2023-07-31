@@ -190,7 +190,7 @@ def construct_target_signature(term,signature_type):
     elif signature_type == 'all right':
         return  [False]*(len(term)-Nks)+[True]*Nks 
     elif signature_type == 'FEM':
-        return [True]*(Nks-1) + [False]*(len(term)-Nks) + [True]
+        return [True]*(Nks-1) + [False]*(len(term)-Nks) + [True]*(bool(Nks))
     
 def arange_ks_array(array,signature_type:str,signature_reduction_direction:str='left'):
     """Given a sympy array containing expressions as entries, rearranges all the elements to acieve the correct signature
@@ -296,6 +296,45 @@ def sort_out_polynomials(expression,symbols):
         
     return [ e for e in exprs if e[1]!=0]
         
+
+def array_sort_out_polynomials(expression:sympy.Array,symbols):
+    """
+    The function `array_sort_out_polynomials` takes an array of polynomial expressions and a list of
+    symbols as input, and returns a dictionary where the keys are the unique polynomials in the array
+    and the values are arrays of coefficients corresponding to each polynomial in the input array.
+    For example if the A,B are arrays and symbols = (x,y). If expression=(A*x+B*y) this function would return {(0,1):A,(1,0):B}
+    
+    :param expression: The expression parameter is a sympy.Array object representing a mathematical
+    expression. It can also be a nested list or numpy array that will be converted to a sympy.Array
+    object if it is not already
+    :type expression: sympy.Array
+    :param symbols: The `symbols` parameter is a list of symbols that represent the variables in the
+    polynomials. These symbols are used to identify and sort out the polynomial terms in the expression
+    :return: a dictionary where the keys are the polynomials found in the expression and the values are
+    arrays representing the coefficients of those polynomials in the original expression.
+    """
+    
+    
+    if not isinstance(expression,sympy.Array):
+        expression = sympy.Array(expression)
+    
+    
+    tuple_dict = {}
+    
+    for i,expr in np.array(expression).ravel():
+        parts = sort_out_polynomials(expr,symbols)
+        for p in parts:
+            # put the parts into their respective tuple arrays
+            if p[0] not in tuple_dict:
+                arr = [sympy.sympify(0)]*len(expression) # flattened version of array for easier indexing
+            else:
+                arr = tuple_dict[p[0]]
+            arr[i] += p[1] # add the coefficient to the array
+    
+    # reshape into arrays
+    return_dict = {k:sympy.Array(a).reshape(*expression.shape) for k,a in tuple_dict.items()}
+    return return_dict
+    
 
 def extract_valid_bipartition_part(expr,func_dict=None):
     """Extracts the bipartition-parts of an expression for which there exists analytically solved matrix representations
@@ -430,13 +469,14 @@ def symbolize_array(array,symbol_base_name):
             next_name = '('+symbol_base_name+f')_{index_counter}(x)'
             yield sympy.Symbol(next_name,commutative=False)
     
+    all_position_syms = (X,Y,Z) +sympy.symbols('x,y,z')
     symbol_generator = new_symbol()
     
     symbol_dict = {}
     new_array = array.as_mutable()
     for i,expr in enumerate(np.array(new_array).ravel()):
         #check if we have seen a similar_expression:
-        if expr.is_constant():
+        if expr.is_constant(*all_position_syms):
             continue # no need to do anything
         
         post_fix = None # post_fix function is applied to the EXPRESSION IN THE DICT and should become the EXPRESSION IN THE ARRAY
@@ -446,7 +486,7 @@ def symbolize_array(array,symbol_base_name):
             post_fix = lambda x: -1*X
         elif sympy.conjugate(expr) in symbol_dict.values():
             post_fix = lambda x: sympy.conjugate(x)
-        elif any((expr/f).is_constant(X,Y,Z,*sympy.symbols('x,y,z')) for f in symbol_dict.values()):
+        elif any((expr/f).is_constant(*all_position_syms) for f in symbol_dict.values()):
             for f in symbol_dict.values():
                 coeff = expr/f
                 if coeff.is_constant(X,Y,Z,*sympy.symbols('x,y,z')):
@@ -466,3 +506,21 @@ def symbolize_array(array,symbol_base_name):
             sym = next(s for s,f in symbol_dict.items() if post_fix(f)==expr)
             new_array[ix] = post_fix(sym)
     return sympy.Array(new_array),symbol_dict 
+
+
+def enforce_commutativity(expr):
+    """
+    The function `enforce_commutativity` enforces commutativity on the given expression by replacing
+    non-commutative symbols with their commutative counterparts.
+    
+    :param expr: The `expr` parameter is the mathematical expression that you want to enforce
+    commutativity on
+    :return: The function `enforce_commutativity` returns the expression `expr` with any non-commutative
+    symbols replaced by equivalent commutative symbols.
+    """
+    
+    if isinstance(expr,(tuple,list)):
+        return expr.__class__((enforce_commutativity(e) for e in expr))
+    
+    commutative_syms = {s:sympy.Symbol(s.name,commutative=True) for s in expr.free_symbols if not s.is_commutative}
+    return expr.subs(commutative_syms)

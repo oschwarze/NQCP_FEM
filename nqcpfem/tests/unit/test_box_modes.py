@@ -98,3 +98,8 @@ class TestBoxEFM(TestCase):
 		reshaped_vector = self.model.eigensolutions_to_eigentensors(vector)
 		np.testing.assert_array_equal(reshaped_vector,vector.T.reshape((2,1,3,3,3)),err_msg=f'vectors of indices {val,val2} were not '
 		                                                                                    f'rebroadcast correctly')
+
+	def test_project_operator(self):
+		self.fail('TODO')
+		# operator A = spinor problem. kx**2 spin up and x**2 spin down. 
+		

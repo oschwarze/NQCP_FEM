@@ -14,7 +14,7 @@ class Test(TestCase):
 
         model = FEniCsModel(band_model, domain)
 
-        n_points = model.mesh.geometry.x.shape[0] #number of x_points
+        n_points = model.mesh().geometry.x.shape[0] #number of x_points
 
         # Make mock spinor states where spin eigenstates are along x and they are either supported on the first or
         # second half of the points. Also add a boundary state that is oncly supported on the boundary the should therefore be discarded
@@ -28,18 +28,18 @@ class Test(TestCase):
         x_up_spinor = 1/np.sqrt(2)*np.array([1, 1], dtype='complex')
         x_down_spinor = 1/np.sqrt(2)*np.array([1, -1], dtype='complex')
 
-        gs_state = np.tensordot(x_up_spinor, x_left, axes=0).flatten()
+        gs_state = np.tensordot(x_up_spinor, x_left, axes=0)
         gs_state = gs_state/np.linalg.norm(gs_state)
-        ex_state = np.tensordot(x_down_spinor, x_left, axes=0).flatten()
+        ex_state = np.tensordot(x_down_spinor, x_left, axes=0)
         ex_state = ex_state/np.linalg.norm(ex_state)
-        boundary_state = np.tensordot(x_down_spinor, singleton_x, axes=0).flatten()
+        boundary_state = np.tensordot(x_down_spinor, singleton_x, axes=0)
         boundary_state = boundary_state/np.linalg.norm(boundary_state)
-        false_positive = np.tensordot(x_down_spinor, x_right,axes=0).flatten()
+        false_positive = np.tensordot(x_down_spinor, x_right,axes=0)
         false_positive = false_positive/np.linalg.norm(false_positive)
-        eigenstates = np.stack([gs_state,ex_state,false_positive,boundary_state], axis=1)
+        eigenstates = np.stack([gs_state,ex_state,false_positive,boundary_state], axis=0)
         energies = np.array([-1, 1, 0, -5])
 
-        from models.spin_gap import find_spin_gap
+        from nqcpfem.spin_gap import find_spin_gap
         gap,states,has_intermediate = find_spin_gap((energies, eigenstates), model, bounded_state_tolerance=0.95)
         self.assertTrue(has_intermediate)
         self.assertAlmostEqual(gap,2)

@@ -434,7 +434,7 @@ def find_spin_gap(results,envelope_model,bounded_state_tolerance=None,positional
 					# check if ground state is a bound state.
 					dist = np.linalg.norm(x, axis=1) #  distance from origin of DoD
 					avg_dist = np.inner(dist,positional_prob_distribution)
-					if avg_dist < bounded_state_tolerance*envelope_model.domain.bounded_scale()/envelope_model.length_scale:
+					if avg_dist < bounded_state_tolerance*envelope_model.domain.bounded_scale()/envelope_model.length_scale():
 						# The average distance from the origin is within the tolerance to be considered a bound state
 						ground_state_i = i
 						ground_state_wave_func = positional_prob_distribution # save gs state to compare with exited states
