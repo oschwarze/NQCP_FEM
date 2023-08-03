@@ -49,7 +49,6 @@ def expand_term(term,split_pow=True):
             raise NotImplementedError(f"Didn't know how to split up term: {term} ({type(term)})")
 
     for t in term:
-        #print(t,isinstance(t,sympy.Pow)),#t.args[0] in (Kx,Ky,Kz))
         if split_pow and ( isinstance(t,sympy.Pow) and (not t.args[0].is_constant(Kx,Ky,Kz) or any(s.name[:-3] == '(x)' for s in t.args[0].free_symbols))):
             # split up Kx**2 into Kx,Kx or V(x)**2 into V(x),V(x) etc.
             split.extend([t.args[0]]*t.args[1])
@@ -161,12 +160,10 @@ def permute_factors(term,start_i,end_i):
     return [term] + additional_terms
 
 def arange_ks(term,target_signature,signature_reduction_direction='left'):
-    #print(term,target_signature,symbols)
     current_signature = [not t.is_constant(Kx,Ky,Kz) for t in term]
     additional_terms = []
     while current_signature != target_signature:
         difference = [b-a for b,a in zip(target_signature,current_signature)]
-        #print(term,target_signature,current_signature)
         # take the index of the first -1 you see as the start put it into the first +1 you see:
         start_i = difference.index(-1)
         target_i = difference.index(1)
@@ -237,9 +234,6 @@ def arange_ks_array(array,signature_type:str,signature_reduction_direction:str='
             
             
             rearanged_elements.append(res)
-    for f in rearanged_elements:
-        print(f)
-        print(type(f))
         
     arranged_array=sympy.Array(rearanged_elements).reshape(*array.shape)
     return arranged_array
@@ -418,7 +412,6 @@ def extract_valid_bipartition_part(expr,func_dict=None):
                 remains = expr.subs({p:1 for p in valid_syms}) # ignore all peacewise for the valid ones
         else:
             remains = expr
-        print(valid_bipartitions,remains)       
     return valid_bipartitions,remains
                 
 
@@ -543,3 +536,6 @@ def enforce_commutativity(expr):
     
     commutative_syms = {s:sympy.Symbol(s.name,commutative=True) for s in expr.free_symbols if not s.is_commutative}
     return expr.subs(commutative_syms)
+    
+if __name__ =='__main__':
+    pass

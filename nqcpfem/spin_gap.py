@@ -22,8 +22,6 @@ DESCRIPTION: This module handles working with results of a GridSearch and spin g
 It is in a separate module, such that this module can be loaded in python version that do not have FEniCSx installed.
 """
 
-
-
 class SpinGapResult(ResultsContainer):
 	"""
 	Class responsible for handling results of af GridSearch. Enables working with the results on systems that have
@@ -234,146 +232,6 @@ class SpinGapResult(ResultsContainer):
 			df['markers_ex'] = df[['max_signs_ex', 'maxes']].apply(lambda x: markers[x['maxes']][x['max_signs_ex']], axis=1)
 		return df
 
-
-def find_spin_gap(results,bounded_state_tolerance=1,wave_func_infidelity=1e-4,param_grid = None,default_params = None,mesh_coords=None,box_dims=None,drop_eigenvectors=False,compute_J=False):
-	"""
-	Find the spin gap between ground state and spin excited state from a set of computed eigenvalues.
-	Determines the ground state as the lowest energy eigenstate that is bounded
-	(has expected distance from origin = `bounded_state_tolerance*box_dimension` ). Determines spin excited state as
-	the lowest excited energy eigenstate with high positional wave-function overlap (higher than ´1-wave_func_infidelity´)
-	with respect to the ground statximum allowed expectation of the distance from (0,0,0) for a state to be considered bounded
-	:param float wave_func_infidelity: Tolerance for the overlap of positional wave-functions before we consider them the same
-	:param ParameterGrid param_grid: parameter grid for returning the results as a pandas dataframe
-	:param dict default_params: Default parameters to use in case of a disjoint parametergrid. has to contain all parameters used in the model
-	:return:
-	"""
-	if isinstance(results,tuple):
-		if len(results) != 2:
-			raise ValueError(f'unsupported value for "results argument. Got {results}"')
-		results = [results]
-		if mesh_coords is None or box_dims is None:
-			raise ValueError(f'If a single result is passed, both `mesh_coords` and `box_dims` should be supplied.')
-	else:
-		mesh_coords = results.mesh_coords
-		box_dims = results.box_dims
-
-	if param_grid is not None and default_params is None:
-		raise ValueError(f'param_grid was given but no default_params dict was passed')
-
-	spin_gaps = []
-	wave_functions = []
-	has_intermediate_state = []
-	angular_momentum = []
-	for res_i,result in enumerate(results):
-		LOGGER.info(f'evaluating results ({res_i+1}/{len(results)})')
-		if result[0] is None:
-			LOGGER.info('no complete solution...?')
-			continue
-		eigen_vals = result[0]
-		eigen_vects = result[1]
-		sorting = np.argsort(eigen_vals)
-		eigen_vects = eigen_vects[sorting]
-		eigen_vals = eigen_vals[sorting]
-
-		ground_state_wave_func = None
-		ground_state_i = None
-		has_found_spin_gap = False
-		log_overlaps = [] # for logging overlaps of unused states
-		for i,e in enumerate(eigen_vals):
-			positional_wave_func = np.linalg.norm(eigen_vects[i].reshape((eigen_vects[i].shape[0],-1)),axis=1) #figure out shape and do
-			if ground_state_i is None:
-				# check if ground state is a bound state.
-				dist = np.linalg.norm(mesh_coords, axis=1) #distance from origin of DoD
-				avg_dist = np.inner(dist,positional_wave_func**2)
-				if avg_dist < max(box_dims)/2*bounded_state_tolerance:
-					ground_state_i = i
-					ground_state_wave_func = positional_wave_func
-					LOGGER.debug(f'Found ground state {i} with distance {np.real(avg_dist)}.')
-					continue
-			else:
-				wave_function_overlap = np.abs(np.inner(positional_wave_func,ground_state_wave_func))
-				log_overlaps.append(wave_function_overlap)
-				if 1-wave_function_overlap < wave_func_infidelity:
-					LOGGER.debug(f'Found excited state {i} with overlap {wave_function_overlap}.\n other overlaps: {log_overlaps[:-1]}')
-					spin_gaps.append(e-eigen_vals[ground_state_i])
-					if not drop_eigenvectors:
-						wave_functions.append((eigen_vects[ground_state_i],eigen_vects[i]))
-					if compute_J:
-
-						vects=np.stack((eigen_vects[ground_state_i],eigen_vects[i]))
-						"""
-						jvects = np.einsum('ijl,axj...->iaxl...',J,vects)
-						indicies = [_ for _ in range(1,len(vects.shape)+1)]
-						angular_momentum.append(np.einsum(np.conj(vects),indicies,jvects,[0]+indicies,[0,1]))
-						jvects_sq = np.einsum('ijl,axj...->iaxl...',J @ J,vects)
-						"""
-						angular_momentum.append(compute_angular_momentum(vects))
-						with np.printoptions(precision=3):
-							debug_string = f'Angular Momenta: {angular_momentum[-1]},\n squares: {expec_val(vects, np.einsum("aji,aik->ajk", J, J))}'
-						LOGGER.debug(debug_string)
-					has_intermediate_state.append(not(ground_state_i+1 == i) )
-					has_found_spin_gap = True
-					break
-
-		if ground_state_i is None:
-			LOGGER.info(f'unable to find ground state....')
-			spin_gaps.append(np.nan)
-			if not drop_eigenvectors:
-				wave_functions.append((None,None))
-			has_intermediate_state.append(None)
-		elif not has_found_spin_gap:
-			LOGGER.info(f'unable to spin-excited state')
-			spin_gaps.append(np.nan)
-			if not drop_eigenvectors:
-				wave_functions.append((None, None))
-			has_intermediate_state.append(None)
-
-	if isinstance(results, SpinGapResult):
-		param_grid = results.parameter_grid
-		default_params = results.model_specification[-1]
-	if param_grid is not None :
-		spin_gaps = np.array(spin_gaps)
-		wave_functions = np.array(wave_functions, dtype=object)
-		has_intermediate_state = np.array(has_intermediate_state, dtype=object)
-		discards = np.isnan(spin_gaps)
-
-		results_dict = {'spin_gaps': spin_gaps[~discards],
-		                'has_intermediate_state': has_intermediate_state[~discards].astype(bool)}
-		if not drop_eigenvectors: # If eigenvectors are not wanted (to save memory)
-			results_dict['wave_function'] = np.stack(wave_functions[~discards], axis=0),
-
-		if compute_J:
-			results_dict['J'] = angular_momentum
-
-
-
-		for blank,param_dict in zip(discards,param_grid):
-			if not blank:
-				for key in set(default_params.keys()).union(param_dict.keys()):
-					if f'param_{key}' not in results_dict:
-						results_dict[f'param_{key}'] = []
-					results_dict[f'param_{key}'].append(param_dict.get(key,default_params[key]))
-
-		"""		
-		for key in default_params.keys(): #cast to numpy arrays
-			results_dict[f'param_{key}'] = np.array(results_dict[f'param_{key}'])
-		"""
-		return results_dict
-	else:
-		wave_functions = [np.stack(w) for w in wave_functions] # combine to single array
-		if len(results) ==1:
-			to_return = (spin_gaps[0], wave_functions[0], has_intermediate_state[0])
-		else:
-			to_return=(spin_gaps, wave_functions, has_intermediate_state)
-		if compute_J:
-			if len(results) == 1:
-				to_return = to_return + (angular_momentum[0],)
-			else:
-				to_return = to_return + angular_momentum
-		return to_return
-
-
-
 def find_spin_gap(results,envelope_model,bounded_state_tolerance=None,positional_max_tv_dist=1e-4):
 	"""
 	Find the spin gap between ground state and spin excited state from a set of computed eigenvalues.
@@ -457,7 +315,6 @@ def find_spin_gap(results,envelope_model,bounded_state_tolerance=None,positional
 
 		if ground_state_i is None:
 			LOGGER.info(f'unable to find ground state. average_dists were: {avg_dists}')
-			print('what')
 			spin_gaps.append(np.nan)
 			wave_functions.append((None, None))
 			has_intermediate_state.append(None)
@@ -474,7 +331,6 @@ def find_spin_gap(results,envelope_model,bounded_state_tolerance=None,positional
 		else:
 			to_return=(spin_gaps, wave_functions, has_intermediate_state)
 		return to_return
-
 
 """ 
 		def plot_solution(self):

@@ -21,7 +21,7 @@ class Function(ABC):
             symbol = sympy.Symbol(symbol,commutative=False)
         else:
             if not symbol.is_commutative: 
-                print(symbol)
+                raise ValueError(f'function symbols should end with (x) and be non-commutative')
         self.symbol = symbol # the symbol representing the function. Must end on (x)
         self._derivatives_ = {}
         super(Function,self).__init__()
