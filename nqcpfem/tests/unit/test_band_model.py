@@ -434,11 +434,11 @@ class TestBandModel(TestCase):
         # test that the parameters are correctly added to the parameter dict
         self.spinor_problem.material_spec('Ge')
         from nqcpfem import _m_e
-        facit = {r'\Delta_{0}': 0.296,
-                 r'\gamma_{1}': 13.38,
-                 r'\gamma_{2}': 4.24,
-                 r'\gamma_{3}': 5.69,
-                 r'\kappa': 3.41,
+        facit = {r'Delta_{0}': 0.296,
+                 r'gamma_{1}': 13.38,
+                 r'gamma_{2}': 4.24,
+                 r'gamma_{3}': 5.69,
+                 r'kappa': 3.41,
                  r'q': 0.06,
                  r'D_{u}': 3.3195,
                  r"D'_{u}": 5.7158,
@@ -446,7 +446,7 @@ class TestBandModel(TestCase):
                  r'c_{12}': 4.13,
                  r'c_{44}': 6.83,
                  r'a': 5.65791,
-                 r'\epsilon': 16.5,
+                 r'epsilon': 16.5,
                  r'm': _m_e}
         facit = {sympy.symbols(k):v for k,v in facit.items()}
         self.assertEqual({k:self.spinor_problem.independent_vars['parameter_dict'][k] for k in facit.keys()}, facit)
@@ -590,7 +590,7 @@ class TestBandModel(TestCase):
         
         e = sympy.symbols('q_{c}')
         import nqcpfem
-        A_sym = sympy.symbols(nqcpfem.band_model.__VECTOR_FIELD_NAMES__)
+        A_sym = sympy.symbols(nqcpfem.band_model.__VECTOR_FIELD_NAMES__,commutative=False)
         facit = self.scalar_A.copy().subs({kx:(kx+e*A_sym[0]/hbar), ky:(ky+e*A_sym[1]/hbar), kz:(kz+e*A_sym[2]/hbar)})
         self.assertTrue(__compare_sympy_arrays__(H,facit),msg='scalar problem did not get correct substitution')
 
@@ -672,12 +672,12 @@ class testFreeFermion(TestCase):
         Bvec = [4,5,6]
         g,m = sympy.symbols('g,m')
         kinetic_term =  sympy.Array([[hbar**2/(2*m) *(kx**2+ky**2+kz**2),0],[0,hbar**2/(2*m) *(kx**2+ky**2+kz**2)]])
-        Bx,By,Bz = sympy.symbols(__MAGNETIC_FIELD_NAMES__)
+        Bx,By,Bz = sympy.symbols(__MAGNETIC_FIELD_NAMES__,commutative=False)
         magnetic_term = mu_B*g*0.5* sympy.Array([[Bz,Bx-1j*By],[Bx+1j*By,-Bz]])
         instance.add_zeeman_term(g_tensor=g_tensor,Bvec=Bvec)
         
         #testing that the array is correct
-        self.assertTrue(__compare_sympy_arrays__(instance.post_processed_array(),kinetic_term+magnetic_term),msg=f'Arrays did not match:\n result:\n {instance.post_processed_array}\n expected:\n {kinetic_term+magnetic_term}\n Difference:\n {(instance.post_processed_array()-(kinetic_term+magnetic_term)).simplify()}')
+        self.assertTrue(__compare_sympy_arrays__(instance.post_processed_array(),kinetic_term+magnetic_term),msg=f'Arrays did not match:\n result:\n {instance.post_processed_array()}\n expected:\n {kinetic_term+magnetic_term}\n Difference:\n {(instance.post_processed_array()-(kinetic_term+magnetic_term)).simplify()}')
 
         #testing that the values are substituted correctly:
         numeric_facit = kinetic_term.subs({m:2,hbar:values[hbar]})+magnetic_term.subs({Bx:4,By:5,Bz:6,g:3,mu_B:values[mu_B]})
@@ -689,11 +689,11 @@ class TestLuttingerKohnHamiltonian(TestCase):
         import nqcpfem
         from nqcpfem.band_model import FreeBoson,FreeFermion
         H = nqcpfem.band_model.LuttingerKohnHamiltonian()
-        self.assertTrue(all(sympy.symbols(k) in H.independent_vars['parameter_dict'].keys() for k in (r'\gamma_{1}',r'\gamma_{2}',r'\gamma_{3}','m',)))
+        self.assertTrue(all(sympy.symbols(k) in H.independent_vars['parameter_dict'].keys() for k in (r'gamma_{1}',r'gamma_{2}',r'gamma_{3}','m',)))
         self.assertTrue(__compare_sympy_arrays__(H.independent_vars['preprocessed_array'] ,nqcpfem.band_model.LuttingerKohnHamiltonian.__make_LK_Hamiltonian__()))
 
         K = sympy.symbols([s.name for s in H.momentum_symbols],commutative=False)
-        g1,g2,g3 = sympy.symbols(r'\gamma_{1},\gamma_{2},\gamma_{3}')
+        g1,g2,g3 = sympy.symbols(r'gamma_{1},gamma_{2},gamma_{3}')
         h = nqcpfem.constants['hbar']
         A = h**2/(2*sympy.symbols('m'))
         """SIGN IS WRONG HERE!
@@ -727,7 +727,8 @@ class TestLuttingerKohnHamiltonian(TestCase):
         from nqcpfem.band_model import FreeBoson,FreeFermion
         from nqcpfem import constants,SP_ANGULAR_MOMENTUM
         import nqcpfem
-        kappa,q,Bx,By,Bz = sympy.symbols(r'\kappa,q, B_{x}(x),B_{y}(x),B_{z}(x)')
+        kappa,q = sympy.symbols(r'kappa,q')
+        Bx,By,Bz = sympy.symbols('B_{x}(x),B_{y}(x),B_{z}(x)',commutative=False)
         J = SP_ANGULAR_MOMENTUM['3/2']
         
         
@@ -741,7 +742,7 @@ class TestLuttingerKohnHamiltonian(TestCase):
         array = H.post_processed_array()
         
         ss = lambda x: sympy.symbols(x)
-        symbol_subs = {ss(r'\gamma_{1}'):0, ss(r'\gamma_{2}'):0 ,ss(r'\gamma_{3}'):0}
+        symbol_subs = {ss(r'gamma_{1}'):0, ss(r'gamma_{2}'):0 ,ss(r'gamma_{3}'):0}
         symbol_subs[q] = 0
         kappa_result = array.subs(symbol_subs)
         self.assertTrue(__compare_sympy_arrays__(kappa_result,kappa_facit))

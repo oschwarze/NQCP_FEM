@@ -1,10 +1,10 @@
 from . import band_model as bm
 from . import envelope_function
 import numpy as np
+import sympy
 from . import _hbar
 from typing import Callable
-from contextlib import suppress
-
+from abc import ABC,abstractmethod
 class Observable(np.ndarray):
     def __new__(cls, tensor, tensor_index=None):
         obj = np.asarray(tensor).view(cls)
@@ -191,7 +191,9 @@ def spin(band_model):
         AM = _hbar * ANGULAR_MOMENTUM['1/2']
         obs = VectorObservable(AM, 0)
         obs = __extend_if_needed__(obs,band_model)
-
+    
+    return obs
+    
 def positional_probability_distribution(band_model) -> Callable:
     """
     Constructs a function that can convert an envelope function solution to it positional probability distribution
@@ -386,56 +388,20 @@ def __extend_if_needed__(obs,band_model):
     return obs
 
 
-
-class MomentumObservable():
-    def __init__(self,envelope_model,direction,order):
-
-        self.k_operator = envelope_model.k_operator(direction,order)
+class AbstractObservable(ABC):
+    
+    @abstractmethod
+    def __init__(self,operator,envelope_model):
+        self.abstract_operator = operator
         self.envelope_model = envelope_model
-        self.direction = direction
-        self.order = order
-        
-        
-    def mel(self,vector,other_vector=None):
-        """
-        The function `mel` calculates the matrix of the operator between tow vectors
-        :param vector: The `vector` parameter represents a vector that will be used in the calculation.
-        It is expected to be a numpy array.
-        :param other_vector: The parameter "other_vector" is an optional parameter that represents a
-        second vector. If this parameter is not provided, the function assumes that the second vector is
-        the same as the first vector (i.e., "vector")
-        :return: the result of applying the momentum operator to the given vectors. If the
-        `other_vector` parameter is not provided, the function assumes that the operator is being
-        applied to the same vector (`vector`) and returns the real part of the result. If the
-        `other_vector` parameter is provided, the function returns the complex result.
-        """
         pass
-        if other_vector is None:
-            diagonal = True
-            other_vector = vector
-        else:
-            diagonal = False
-        # we need to flatten the vectors before applying the momentum operator
-        vector = vector.flatten() 
-        other_vector = vector.flatten()
-
-        res = vector.conjugate().T @ self.k_operator @ other_vector
-        if diagonal:
-            return np.real(res)
-        return res
     
+    @abstractmethod
+    def mel(self,vector,other_vector=None):
+        # compute the matrix element between two vectors 
+        pass
+    
+    @abstractmethod
     def apply(self,vector):
-        """
-        The function applies a linear operator to a vector and returns the result.
-        
-        :param vector: The `vector` parameter is a numpy array representing a vector
-        :return: the result of applying the k_operator to the flattened vector and reshaping it back to
-        the original shape.
-        """
-        
-        
-        shape = vector.shape
-        vector = vector.flatten()
-        res = self.k_operator @ vector
-        return res.reshape(shape)
-    
+        # apply the observable to the vector
+        pass

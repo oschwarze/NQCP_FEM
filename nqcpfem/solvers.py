@@ -22,6 +22,7 @@ class ModelSolver(ABC):
 		self.solver_kwargs = solver_kwargs
 		self.sparse = sparse
 		self.return_tensor = True
+		self.normalize = False
 
 	@abstractmethod
 	def solve(self,model,sparse=None):
@@ -53,7 +54,7 @@ class ModelSolver(ABC):
 		"""
 		converted = self.solver_kwargs.copy()
 		if 'sigma' in converted.keys():
-			converted['sigma'] = converted['sigma'] / model.energy_scale
+			converted['sigma'] = converted['sigma'] / model.energy_scale()
 
 		return converted
 
@@ -113,7 +114,7 @@ class ScipySolver(ModelSolver):
 		if self.return_tensor:
 			normalized_eigenvects = model.eigensolutions_to_eigentensors(normalized_eigenvects)
 
-		solution = (solution[0]*model.energy_scale, normalized_eigenvects)
+		solution = (solution[0]*model.energy_scale(), normalized_eigenvects)
 
 		return solution
 class PETScSolver(ModelSolver):
@@ -198,10 +199,13 @@ class PETScSolver(ModelSolver):
 		eigenvectors = []
 		for i in range(eig_problem.getConverged()):
 			lmbda = eig_problem.getEigenpair(i, vr, vi)
-			eigenvalues.append(lmbda.real*model.energy_scale) # convert back to actual units
+			eigenvalues.append(lmbda.real*model.energy_scale()) # convert back to actual units
 
 			eigenvector = np.array(vr.array) + 1j*np.array(vi)
-			eigenvectors.append(eigenvector/np.linalg.norm(eigenvector))
+			if self.normalize:
+				eigenvector = eigenvector/np.linalg.norm(eigenvector)
+
+			eigenvectors.append(eigenvector)
 
 
 

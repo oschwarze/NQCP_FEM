@@ -1,8 +1,7 @@
-from . import envelope_function
+from re import A
+from . import band_model,envelope_function
 from .updatable_object import ComputedAttribute,AttributeSnapshot,auto_update
 from .envelope_function import Domain
-from . import band_model as bm
-from . import symbolic as symb
 import numpy as np
 import sympy
 from typing import List,Tuple
@@ -15,6 +14,8 @@ if PETSc.ScalarType != np.complex128:
     raise ImportError(f'usage of FEniCS requires complex build of PETSc, but the current PETSc build is for real numbers')
 
 
+from . import band_model as bm
+from . import symbolic as symb
 import logging
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
@@ -215,10 +216,21 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         """
 
         # divide out length scale to get dimensions equal for all terms.
+        #max_vals =np.array([np.max(np.abs(np.array(sympy.Array(T).subs({d:0 for d in self.independent_vars['band_model'].position_symbols}))))/self.length_scale()**R for R,T in self.independent_vars['band_model'].numerical_tensor_repr().items()]).astype(np.float64)
+        #return np.real(np.max(max_vals))#.astype(np.float64) # this number should never be complex
 
-        max_vals =np.array([np.max(np.abs(np.array(sympy.Array(T).subs({d:0 for d in self.independent_vars['band_model'].position_symbols}))))/self.length_scale()**R for R,T in self.independent_vars['band_model'].numerical_tensor_repr().items()]).astype(np.float64)
-    
-        return np.real(np.max(max_vals))#.astype(np.float64) # this number should never be complex
+        max_vals = []
+        for R,T in self.band_model.numerical_tensor_repr().items():
+            try:
+                max_vals.append(np.max(np.abs(np.array(sympy.Array(T).subs({d:0 for d in self.independent_vars['band_model'].position_symbols}))))/self.length_scale()**R)
+            except TypeError as err:
+                pass
+            
+#        max_vals =np.array([ for R,T in self.independent_vars['band_model'].numerical_tensor_repr().items()]).astype(np.float64)
+        if len(max_vals):
+            return float(np.real(np.max(max_vals)))#.astype(np.float64) # this number should never be complex
+        else:
+            return 1
 
     @auto_update
     def converted_functions(self):
@@ -263,18 +275,38 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         band_model = self.independent_vars['band_model']
         free_syms = tuple( s for s in band_model.post_processed_array().free_symbols if (s not in band_model.momentum_symbols + band_model.position_symbols) and (s.name[-3:] != '(x)')) # functions and special variables are excluded as they do not need casting as dolfinx constants
         
+        pos_syms= sympy.symbols('x,y,z')
         
         # parameter dict with all the symbols to assing and the corresponding 
         new_param_dict =  {s:dolfinx.fem.Constant(self.function_space(), np.complex128(1)) for s in free_syms} #type: ignore
         
 
+        scalar_function_space = self.__make_function_space__(self.mesh(),self.independent_vars['function_class'],1) # interpolate the scalar functions as the same class as the trial and test functions
+        for sym,func in new_param_dict.items():
+            if sym.name[-3:] == '(x)':
+                
+                if isinstance(func,sympy.Piecewise):
+                    # we have to traverse through any sympy piecewise functions and convert them, since UFL stuff cannot handle regular comparison operators. 
+                    # NB! There should'nt be any free symbols other than those contained in parameter_dict and constants as wells as x,y, and z in the piecewise expression.
+                    # this is done becuase UFL types and sympy types DO NOT MIX and UFL types use special relation operators. 
+
+                    converted_piecewise = convert_piecewise(func,__ufl_relations__,variables = new_param_dict)
+                    new_param_dict[sym] = converted_piecewise
+                
+                else:
+                    # other functions are interpolated in the usual way
+                    f = dolfinx.fem.Function(scalar_function_space)
+                    f.name = sym.name
+                    f.interpolate(func)
+                    new_param_dict[sym] = f 
+        
         
         new_param_dict['__energy_scale__'] = dolfinx.fem.Constant(self.function_space(),np.complex128(1)) # add the energy scale as a constant as well since it depends on the parameter_dict and we want the ufl_form to be independent of the parameter_dict
         if sympy.symbols(r'\hbar') in new_param_dict.keys():
             new_param_dict[sympy.symbols(r'hbar')] = new_param_dict[sympy.symbols(r'\hbar')]
             
         fem_x = ufl.SpatialCoordinate(self.mesh())
-        new_param_dict.update({band_model.position_symbols[i]:fem_x[i] for i in range(band_model.spatial_dim)})
+        new_param_dict.update({pos_syms[i]:fem_x[i]*self.length_scale() for i in range(self.band_model.spatial_dim)}) 
         return new_param_dict
     @auto_update
     def ufl_form(self):
@@ -299,8 +331,18 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         
         # make symbolic array with ENFORCED ordering of the Ks (one k acting on the trial_function and the rest acting on the test-function)
         from .symbolic import arange_ks_array
+        from .functions import SymbolicFunction,NumericalFunction
         symbolic_ordered_array = arange_ks_array(self.band_model.post_processed_array(),self.k_signature)
+        #replace symbolic expressions with their appropriate functions
+        
+        symbolic_ordered_array = symbolic_ordered_array.subs({v:f.expression for v,f in self.band_model.post_processed_functions().items() if isinstance(f,SymbolicFunction)})
+
+        if any(isinstance(f,NumericalFunction) for f in self.band_model.post_processed_functions().values()):
+            raise NotImplementedError('todo: INterpolate the numerical function onto the mesh')
+        
         symbolic_tensor = self.band_model.__make_tensor_dict__(symbolic_ordered_array,self.band_model.spatial_dim)
+        
+        
         for rank,tensor in symbolic_tensor.items():
             
             # we first substitute everything into, then scale by the relevant parameters.
@@ -334,9 +376,9 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                     raise ufl.UFLException(f'trying to cast a tensor (type {type(normalized_tensor)} as ufl failed:\n') from err
             ufl_tensors[rank] = ufl_version
         # L(u,v) = <u,Hv>
-        L = self.__ufl_tensor_dict_to_form__(ufl_tensors)
+        L = self.__ufl_tensor_dict_to_bilinear_form__(ufl_tensors)
         return L
-    def __ufl_tensor_dict_to_form__(self,ufl_tensors):
+    def __ufl_tensor_dict_to_bilinear_form__(self,ufl_tensors,u=None,v=None):
         """
         The function `__ufl_tensor_dict_to_form__` takes a dictionary of UFL tensors and converts them
         into a UFL form.
@@ -347,8 +389,11 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         :return: the form `L`, which is a UFL expression representing a linear form.
         """
         import ufl
-        u = ufl.TrialFunction(self.function_space())
-        v = ufl.TestFunction(self.function_space())
+        if u is None and v is None:
+            u = ufl.TrialFunction(self.function_space())
+            v = ufl.TestFunction(self.function_space())
+        elif (u is not None) and  (v is None):
+            raise SyntaxError('it is not allowed to only pass one of function u and v')
         L = None
         is_scalar_problem = self.independent_vars['band_model'].tensor_shape == (1,1)
         for rank,ufl_tensor in ufl_tensors.items():
@@ -378,7 +423,39 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
 
         return L
     
-    
+    def __ufl_tensor_dict_to_linear_form__(self,ufl_tensors,u):
+        import ufl
+        L = None
+        is_scalar_problem = self.independent_vars['band_model'].tensor_shape == (1,1)
+        for rank,ufl_tensor in ufl_tensors.items():
+            # assume grouped ordering of the indices so [aL,aR,bL,bR,...,x1,x2,x3,...] where the last x axes are the spatial ones
+
+            
+            
+            I_ten = tuple() if is_scalar_problem else ufl.indices(len(self.band_model.tensor_shape))
+            I_ten_left = tuple([I_ten[i] for i in range(0,len(I_ten),2)])
+            I_ten_right = tuple([I_ten[i] for i in range(1, len(I_ten), 2)])
+            I_space = ufl.indices(rank) # returns empty tuple if not rank
+            del_u = u
+            for _ in range(rank-1):
+                del_u = -1j*ufl.grad(del_u)
+
+            if I_space != tuple():
+                # TODO: check that this index  slicing works. Alternatively. Do the loop explicitly and assemble a nested list and cast as tensor /vector
+                term = del_u[tuple(I_ten_left+(I_space[0],))] * ufl_tensor[I_ten_left+(Ellipsis,)+I_space]
+
+            else:
+                if is_scalar_problem:
+                    term = ufl_tensor*del_u
+                else:
+                    term = del_u[I_ten_left] * ufl_tensor[I_ten_left+(Ellipsis,)]
+            if L is None:
+                L = term
+            else:
+                L+= term
+
+        return L
+        
     @auto_update
     def bilinear_form(self,overwrite=False):
         """
@@ -522,6 +599,21 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
             return_tensors = return_tensors[0,...]
         return return_tensors
 
+    def flatten_eigentensors(self,eigentensors):
+        if eigentensors.shape != self.band_model.tensor_shape[::2]+ (self.mesh().geometry.x.shape[0],):
+            # left index is assigned to be indexing the tensors
+            start = 1
+        else:
+            start = 0
+        
+        transpose_shape= [0]*start + list(range(1+start,len(eigentensors.shape))) + [start]
+        transposition = eigentensors.transpose(transpose_shape)
+        if start:
+            return transposition.reshape(eigentensors.shape[0],-1)
+        else:
+            return transposition.flatten()
+        
+
     @staticmethod
     def __make_S_array__(old_S_array:ComputedAttribute,function_space,band_model,dolfin_bc):
         u = ufl.TrialFunction(function_space.value)
@@ -562,58 +654,9 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         from scipy.sparse import  csr_matrix
         return csr_matrix(A.getValuesCSR()[::-1]) # return as scipy sparse matrix
 
-    def k_operator(self,direction,order):
-        
-        if isinstance(direction,int):
-            direction = [direction]
-        
-        if isinstance(order,int):
-            order = [order]
-        
-        if len(direction) != len(order):
-            raise ValueError(f'number of directions must mach numer of orders: {len(direction)} vs. {len(order)}')
-        
-        
-        u = ufl.TrialFunction(self.function_space())
-        v = ufl.TestFunction(self.function_space())
 
-        # create list of derivative instructions:
-        derivatives = sum(([d for _ in range(o)] for o,d in zip(order,direction)),[])
-        vector_rank = int(len(self.independent_vars['band_model'].tensor_shape)/2)
-        I = ufl.indices(vector_rank)
-        uu = u if self.independent_vars['band_model'].tensor_shape == (1,1) else u[I] #scalar case 
-        
-        
-        vv = v if self.independent_vars['band_model'].tensor_shape == (1,1) else v[I] #scalar case 
-        
-        
-    
-        du = -1j*uu.dx(derivatives[0])
-        dv = ufl.conj(vv)
-        for k in derivatives[1:]:
-            dv = 1j*dv.dx(k)
-        
-        L = du*dv*ufl.dx
-
-        form = dolfinx.fem.form(L)
-        A = dolfinx.fem.petsc.assemble_matrix(form,self.dolfin_bc())
-        A.assemble()
-
-
-        from scipy.sparse import  csr_matrix
-        return csr_matrix(A.getValuesCSR()[::-1]) # return as scipy sparse matrix
-
-    
     def project_operator(self,operator):
-
-        # TODO:
-        # - extract making the UFL_form to take dict of UFL ready tensors (k_rank as keys) and return the form
-        # - make dict for Ks and Xs polynomial and plug in the interpoloated X operators in the x-place to construct UFL ready tensors
-        # - if it is pure X, we need not make UFL form so we can skip that part
-        # 
-        
-        # test: passing the identity should not take a shortcut but do the full computation and result in the same thing as the S_array
-        
+        # NB! the array produced here is wrt a basis that is NOT orthonormal! proceed with caution.
         symbols = (symb.X,symb.Y,symb.Z,symb.Kx,symb.Ky,symb.Kz)
         
         
@@ -640,13 +683,14 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 for i,xo in enumerate(x_orders):
                 #for each array_constant add the position expression according to the order
                     if xo:
-                        tensor *= X[i]**xo
-                big_tensor += tensor
+                        tensor = tensor* X[i]**xo # allows for posibility of changing datatype
+                big_tensor = big_tensor + tensor # allows for posibility of changing datatype
             
-            ufl_tensors[order] = ufl.as_tensor(big_tensor)
+            if (big_tensor != 0).any():
+                ufl_tensors[order] = ufl.as_tensor(big_tensor)
             
         
-        form = self.__ufl_tensor_dict_to_form__(ufl_tensors)
+        form = self.__ufl_tensor_dict_to_bilinear_form__(ufl_tensors)
         assembled_array = dolfinx.fem.form(form)
         
         A = dolfinx.fem.petsc.assemble_matrix(assembled_array,self.dolfin_bc())#diagonal=1234e10)
@@ -661,7 +705,11 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         return array   
                 
     
-    
+    def construct_observable(self,operator):
+        if isinstance(operator,np.ndarray):
+            operator = sympy.Array(operator)
+        return FEniCsObservable(operator,self)
+
 def make_function_space(domain,spatial_dim,function_class=('CG',1),shape=(1,),scale_factor=1):
     """
     Makes a function space over a domain.
@@ -675,6 +723,92 @@ def make_function_space(domain,spatial_dim,function_class=('CG',1),shape=(1,),sc
     mesh = FEniCsModel.__make_mesh__(domain,spatial_dim,scale_factor)
 
     return FEniCsModel.__make_function_space__(mesh,function_class,shape)
+
+
+# Observable
+from .observables import AbstractObservable
+class FEniCsObservable(AbstractObservable):
+
+    def __init__(self, operator:sympy.Array|np.ndarray, envelope_model:envelope_function.EnvelopeFunctionModel):
+        super().__init__(operator, envelope_model)
+
+        # we can already assemble ufl form and just substitute the functions when mel or apply are called
+        self.left_v = dolfinx.fem.Function(self.envelope_model.function_space())
+        self.right_v =dolfinx.fem.Function(self.envelope_model.function_space())
+        from . import symbolic as symb
+        symbols = (symb.X,symb.Y,symb.Z,symb.Kx,symb.Ky,symb.Kz)
+        
+        if not all(s in symbols for s in operator.free_symbols):
+            raise ValueError(f'only alloed symbols are {symbols} but operator had symbols: {operator.free_symbols}')
+        
+        # cast as FEM form (in this form we directly know that the Ks only act on the trial and test function)
+        aranged_O = symb.arange_ks_array(operator,self.envelope_model.k_signature)
+        
+        tensor_repr = bm.BandModel.__make_tensor_dict__(aranged_O,self.envelope_model.band_model.spatial_dim)
+        
+        # bring the tensors to the correct shape.
+        
+        self.ufl_tensors = {}
+        for order,arr in tensor_repr.items():
+            
+            # replace the x,y,z with ufl.SpatialCoordinate. This is done by treating expressions in arr as polynomials of x,y,z and replacing it according to polynomial order
+            arr = sympy.Array(arr)
+            x_order_dict = symb.array_sort_out_polynomials(symb.enforce_commutativity(arr),sympy.symbols('x,y,z'))
+            big_tensor = np.zeros(arr.shape,dtype='O') 
+            for x_orders,coeff in x_order_dict.items():
+                # replace complex numbers by dolfinx.fem.Constant!
+                tensor = np.array([dolfinx.fem.Constant(self.envelope_model.function_space(),np.complex128(c)) for c in np.array(coeff).ravel()]).reshape(coeff.shape)
+
+                X = ufl.SpatialCoordinate(self.envelope_model.mesh())
+                for i,xo in enumerate(x_orders):
+                #for each array_constant add the position expression according to the order
+                    if xo:
+                        tensor = tensor* X[i]**xo*self.envelope_model.length_scale()**xo # allows for posibility of changing datatype
+                big_tensor +=tensor # allows for posibility of changing datatype
+            
+            if (big_tensor != 0).any():
+                self.ufl_tensors[order] = ufl.as_tensor(big_tensor/(self.envelope_model.length_scale()**order))
+            
+        
+        self.ufl_bilinear_form = self.envelope_model.__ufl_tensor_dict_to_bilinear_form__(self.ufl_tensors,u=self.right_v,v=self.left_v)
+        self.bilinear_form = dolfinx.fem.form(self.ufl_bilinear_form)
+        #THISDOES NOT WORK
+        self.ufl_linear_form = self.envelope_model.__ufl_tensor_dict_to_linear_form__(self.ufl_tensors,self.right_v)
+        #self.linear_form = dolfinx.fem.Expression(self.ufl_linear_form,self.envelope_model.function_space().element.interpolation_points())
+    
+    def mel(self,vector,other_vector =None):
+        vector = self.envelope_model.flatten_eigentensors(vector)
+        if other_vector is None:
+            other_vector = vector
+        else:
+            other_vector =self.envelope_model.flatten_eigentensors(other_vector) 
+        
+        # sign the numerical value of the functions in the array    
+        self.left_v.x.array[:] = vector.flatten()
+        self.right_v.x.array[:] = other_vector.flatten()
+
+        # assemble the array and build 
+        res = dolfinx.fem.assemble_scalar(self.bilinear_form)
+        
+        if other_vector is vector:
+            return np.real(res)
+        else:
+            return res
+                
+        
+    def apply(self,vector):
+        
+        self.right_v.x.array[:] =  self.envelope_model.flatten_eigentensors(vector)
+        
+        # assemble expression and interpolate outcome
+        result = dolfinx.fem.Function(self.envelope_model.function_space())
+        result.interpolate(self.linear_form)
+        
+        res_array = np.array(result.x.array)
+        
+        res = self.envelope_model.eigensolutions_to_eigentensors(res_array)
+        
+        return res
 
 
 

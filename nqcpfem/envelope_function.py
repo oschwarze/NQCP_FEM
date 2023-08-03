@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from .band_model import BandModel
 from .updatable_object import UpdatableObject,auto_update
 from typing import Sequence
+import numpy as np
+import sympy
 class Domain():
     def __post_init__(self):
         self.mesh = None
@@ -43,7 +45,7 @@ class EnvelopeFunctionModel(UpdatableObject,ABC):
         return self.independent_vars['domain']
 
     @property
-    @abstractmethod
+    #@abstractmethod
     def k_signature(self) -> str:
         # return the desired K-ordering for this type of envelope function.
         pass
@@ -93,7 +95,7 @@ class EnvelopeFunctionModel(UpdatableObject,ABC):
         
         raise NotImplementedError
 
-    @abstractmethod
+    #@abstractmethod
     def project_operator(self,operator):
         """
         Projects the operator down to the states used in the envelope function model.
@@ -107,12 +109,19 @@ class EnvelopeFunctionModel(UpdatableObject,ABC):
         pass
     
     
+    
+    #@abstractmethod
+    def construct_observable(self,operator:sympy.Array|np.ndarray):
+        # Construct an AbstractObservable which can be aplied to the solutions of this model.
+        pass
+        
+        
     def __getstate__(self):
         state = self.__dict__.copy()
         state['_array'] = None
         return state
 
-    @property
+    
     def energy_scale(self):
         """
         If the entries of the assembled array have been scaled by the model to ensure better numerical stability,
@@ -120,7 +129,7 @@ class EnvelopeFunctionModel(UpdatableObject,ABC):
         :return:
         """
         return 1
-    @property
+
     def length_scale(self):
         """
         If the model internally uses scaled legths in order to improve numerical stability, the actual lengths can be

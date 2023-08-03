@@ -7,6 +7,10 @@ sys.path.append(src_path)
 
 import nqcpfem.band_model
 
+import logging
+LOG=logging.getLogger(__name__)
+LOG.setLevel(logging.DEBUG)
+LOG
 
 class TestFEniCsModel(unittest.TestCase):
     def setUp(self) -> None:
@@ -47,7 +51,6 @@ class TestFEniCsModel(unittest.TestCase):
         self.box_domain.resolution = [75, 75]
         self.box_model = FEniCsModel(self.band_model, self.box_domain, 0, self.function_class)
 
-
     def test_assemble_array(self):
         # testing harmonic oscillator modes
         from nqcpfem import _m_e,_hbar
@@ -78,20 +81,46 @@ class TestFEniCsModel(unittest.TestCase):
                 p.add_mesh(warped, scalars='u')
                 p.show()
         """
-        np.testing.assert_allclose(N_found,N_found.astype(int),rtol=1e-2,atol=5.2e-1)
+        np.testing.assert_array_less(N_found,100) #check that we actually get small eigenvalues
+        np.testing.assert_allclose(N_found,N_found.astype(np.int32),rtol=1e-2,atol=5.2e-1)
 
+        facit_list = []
+        next_n = iter(range(1,N+1))
+        while len(facit_list)<2*N: # we have to make a lot to assure that we get the smallest ones
+            new_n = next(next_n)
+            facit_list.extend([new_n]*(2*new_n))
+        
+        facit_list = np.sort(facit_list)
+        np.testing.assert_allclose(np.sort(N_found),facit_list[:N],atol=5.2e-1,rtol=1e-2)
+        
+        
+        import sympy
+        self.box_model.band_model.parameter_dict[sympy.symbols('omega')] = 0
         A_box = self.box_model.assemble_array()
         S_box = self.box_model.make_S_array()
 
 
         print('Solving box problem...')
-        box_solution = eigsh(A_box,M=S_box,k=N,sigma=-1000)
+        box_solution = eigsh(A_box,M=S_box,k=N,sigma=-2000)
         N_box_found = box_solution[0]/(_hbar**2*np.pi**2/(2*self.mass*self.Lx**2))*self.box_model.energy_scale()
 
         print('box_modes:\n',N_box_found)
         N_box_found[N_box_found<0.5] = 0
-        np.testing.assert_allclose(N_box_found,N_box_found.astype(int),rtol=1e-2,atol=1e-3)
+        np.testing.assert_array_less(N_found,100) #check that we actually get small eigenvalues
+        np.testing.assert_allclose(N_box_found,N_box_found.astype(np.int32),rtol=1e-2,atol=1e-3)
 
+        facit = []
+        next_n = iter(range(2,N+2)) # start from 2 since that is ground state in both x and y
+        while len(facit)<2*N:
+            n = next(next_n)
+            # find all different partitions
+            partitions = set((i,n-i) for i in range(1,n)) # minimum of each element i 1
+            
+            facit.extend(p[0]**2+p[1]**2 for p in partitions for _ in range(2)) # add everything twice because of spind degeneracy
+            
+        facit = np.sort(facit)
+        np.testing.assert_allclose(np.sort(N_box_found),facit[:N],atol=5.2e-1,rtol=1e-2)
+        
     def test_positional_rep(self):
         import dolfinx
         from nqcpfem.band_model import FreeFermion
@@ -163,12 +192,95 @@ class TestFEniCsModel(unittest.TestCase):
         self.assertEqual(self.model._saved_ufl_form._modified_time_,old_form._modified_time_)
         
     def test_projcet_operator(self):
-        self.fail('')
         # assert that identity operator matches S operator
-        # assert operator A should be spinor problem  x**2 for spindown and spinup 
-        # we cannot do much more than verifying that the shape of this is correct and nothing coupls spinup and spindown
-        # sparsity pattern should be identical to S array. chekc this (exercise in sparsity patterns)
-        # operator kx**2 spin_up and x**2 spin down. chekc that nothing coupls spin up and spin down
-
+        import sympy
+        operator = sympy.Array([[1,0],[0,1]])
+        O = self.model.project_operator(operator)
+        S = self.model.make_S_array()
+        diff = O-S
+        
+        max = diff.max()
+        min = diff.min()
+        np.testing.assert_allclose([max,min],0) 
+        
+        
+        # Chekc that X**2 operator has the same sparsity pattern as the S matrix
+        X = sympy.symbols('x',commutative=False)
+        operator = operator*X**2 
+        O = self.model.project_operator(operator)
+        
+        O_is = np.split(O.indices,O.indptr)[1:-1]
+        
+        S_is = np.split(S.indices,S.indptr)[1:-1]
+        
+        for i,(o_row,s_row) in enumerate(zip(O_is,S_is)):
+            np.testing.assert_array_equal(o_row,s_row,err_msg=f'row {i} did not have the same sparsity pattern')
+        
+        
+        # test that it works just like assemble_array
+        from nqcpfem.symbolic import Kx
+        from nqcpfem import _hbar
+        self.setUp()
+        self.model.domain.resolution = [100,100]
+        operator = self.model.band_model.post_processed_array().subs({'m':self.mass,'omega':0,'\hbar':_hbar})
+        O = self.model.project_operator(operator)
+        S = self.model.make_S_array()
+        
+        # assert that the array gives particle in a box eigenmodes:
+        O = O +self.model.infinite_boundary_vec()
+        factor = (_hbar**2*np.pi**2/(2*self.mass*self.Lx**2))
+        
+        import scipy.sparse as sparse
+        eigvals,eigvecs = sparse.linalg.eigsh(O,k=10,M=S,sigma=-1000)
+        nsq = eigvals/factor
+        np.testing.assert_allclose(nsq,np.round(nsq))
+        
+        
+    def test_make_observable(self):
+        # make poisson equatio and
+        from nqcpfem.symbolic import Kx,Ky
+        from nqcpfem.band_model import BandModel
+        from nqcpfem import fenics
+        from nqcpfem.solvers import PETScSolver
+        import sympy
+        poisson_spinor = sympy.Array([[Kx**2+Ky**2+np.pi**2,0],[0,Kx**2+Ky**2-np.pi**2]])
+        bm = BandModel(poisson_spinor,2)
+        
+        # use domain from setup
+        model = fenics.FEniCsModel(bm,self.domain,0,('CG',1))
+        
+        # solve the model and obtain eigenstates in the usual way.
+        solver = PETScSolver(which='SM',sigma=0,k=10)
+        
+        eigvals,eigvecs = solver.solve(model)
+        
+        # take lowest eigenstates and compute the MEL of sigma_z operator
+        
+        sigma_z = sympy.Array([[1,0],[0,-1]])
+        Oz = model.construct_observable(sigma_z)
+        Oz_proj = np.array([Oz.mel(ev1,ev2) for ev1 in eigvecs[:2] for ev2 in eigvecs[:2]][::-1]).reshape((2,2)) #reversed order because evecs are sorted by eigenvalue (low to high)
+        
+        
+        np.testing.assert_allclose(Oz_proj,np.array(sigma_z).astype(complex),atol=1e-3,rtol=1e-3)
+        
+        
+        # check that the MEL of O work as intended.
+        
+        Ox = model.construct_observable(sympy.Array([[0,1],[1,0]]))
+        flipped = Ox.apply(eigvecs[0])
+        flipped = flipped/np.linalg.norm(flipped)
+        
+        ev0 = eigvecs[0]/np.linalg.norm(eigvecs[0])
+        ev1 = eigvecs[1]/np.linalg.norm(eigvecs[1])
+        # flipped must be orthogonal to eigvecs[0]
+        np.testing.assert_allclose(np.einsum('ix,ix',flipped.conj(),ev0),0,atol=1e-3)
+        np.testing.assert_allclose(np.abs(np.einsum('ix,ix',flipped.conj(),ev1)),1,rtol=1e-3)
+        
+        
+        
+        
+        
+        
+        
 if __name__ == '__main__':
     unittest.main()
