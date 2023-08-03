@@ -1,3 +1,4 @@
+import unittest
 from unittest import TestCase
 import numpy as np
 import numpy.testing as testing
@@ -29,9 +30,9 @@ class TestGMatrix(TestCase):
         self.Lz = L
         self.g_factor=2
         self.box_band_models= {'FreeParticle': FreeFermion(self.mass, 3).add_zeeman_term(g_tensor=self.g_factor, Bvec=[0,0,0])}
-        self.box_band_models['LK'] = LuttingerKohnHamiltonian(3).material_spec('Ge').add_zeeman_term([0,0,0],)
+        self.box_band_models['LK'] = LuttingerKohnHamiltonian(3).material_spec('Ge').add_zeeman_term(B=[0,0,0])
         self.fenics_band_models= {'FreeParticle': FreeFermion(self.mass, 2).add_zeeman_term(self.g_factor,[0,0,0])}
-        self.fenics_band_models['LK'] = LuttingerKohnHamiltonian(3).material_spec('Ge').add_zeeman_term([0,0,0]).add_z_confinement(lz=25e-9,nz_modes=1,z_confinement_type='box')
+        self.fenics_band_models['LK'] = LuttingerKohnHamiltonian(3).material_spec('Ge').add_zeeman_term(B=[0,0,0]).add_z_confinement(lz=25e-9,nz_modes=1,z_confinement_type='box')
 
 
         self.domain = RectangleDomain(self.Lx, self.Ly, self.Lz)
@@ -46,7 +47,11 @@ class TestGMatrix(TestCase):
         ho_potential = 0.5*m*omega**2*(x**2+y**2)
         
         self.fenics_models['FreeParticle'].band_model.add_potential(ho_potential)
+        self.fenics_models['FreeParticle'].band_model.independent_vars['parameter_dict'][m] = self.mass
+        self.fenics_models['FreeParticle'].band_model.independent_vars['parameter_dict'][omega] = self.omega
         self.fenics_models['LK'].band_model.add_potential(ho_potential)
+        self.fenics_models['LK'].band_model.independent_vars['parameter_dict'][m] = self.mass
+        self.fenics_models['LK'].band_model.independent_vars['parameter_dict'][omega] = self.omega
 
         from nqcpfem.box_modes import BoxEFM
         n_modes = 5
@@ -54,7 +59,11 @@ class TestGMatrix(TestCase):
                         'LK':BoxEFM(self.box_band_models['LK'],self.domain,n_modes,n_modes,n_modes)}
 
         self.box_models['FreeParticle'].band_model.add_potential(ho_potential)
+        self.box_models['FreeParticle'].band_model.independent_vars['parameter_dict'][m] = self.mass
+        self.box_models['FreeParticle'].band_model.independent_vars['parameter_dict'][omega] = self.omega
         self.box_models['LK'].band_model.add_potential(ho_potential)
+        self.box_models['LK'].band_model.independent_vars['parameter_dict'][m] = self.mass
+        self.box_models['LK'].band_model.independent_vars['parameter_dict'][omega] = self.omega
 
 
         from nqcpfem.solvers import PETScSolver,ScipySolver
@@ -134,19 +143,19 @@ class TestGMatrix(TestCase):
                 # compute spin_gap splitting numerically
                 efm_model.band_model.parameter_dict['Bvec'] = Bvec
                 print(efm_model.band_model.parameter_dict)
-                efm_model.band_model.__build_model__(force_build=True)
-                print(efm_model.band_model._tensor_constructors_[-1](efm_model.band_model.parameter_dict))
+                #efm_model.band_model.__build_model__(force_build=True)
+                #print(efm_model.band_model._tensor_constructors_[-1](efm_model.band_model.parameter_dict))
                 eigensolution = solver.solve(efm_model,sparse=True)
-                from nqcpfem.plotting import plot_eigenvector
-                from nqcpfem.observables import band_angular_momentum,HH_projection
-                from nqcpfem import _hbar
-                AM = band_angular_momentum(efm_model.band_model)
-                HH = HH_projection(efm_model.band_model)
+                #from nqcpfem.plotting import plot_eigenvector
+                #from nqcpfem.observables import band_angular_momentum,HH_projection
+                #from nqcpfem import _hbar
+                #AM = band_angular_momentum(efm_model.band_model)
+                #HH = HH_projection(efm_model.band_model)
 
-                print([AM.mel(es)/_hbar for es in eigensolution[1]])
-                print(eigensolution[0]/(_hbar*self.omega))
-                print([HH.mel(es) for es in eigensolution[1]])
-                from matplotlib import pyplot as plt
+                #print([AM.mel(es)/_hbar for es in eigensolution[1]])
+                #print(eigensolution[0]/(_hbar*self.omega))
+                #print([HH.mel(es) for es in eigensolution[1]])
+                #from matplotlib import pyplot as plt
                 """
                 for i in range(5):
                     positional,x = efm_model.positional_rep(eigensolution[1][i],50)
@@ -165,3 +174,6 @@ class TestGMatrix(TestCase):
         self.fail()
     def test_derivative(self):
         self.fail()
+
+if __name__ =='__main__':
+    unittest.main()

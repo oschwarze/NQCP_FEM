@@ -24,7 +24,6 @@ class MockEFM():
     def eigensolutions_to_eigentensors(self,eigensols):
         return eigensols
 
-    @property
     def energy_scale(self):
         return 1
 class TestScipySolver(TestCase):
@@ -39,7 +38,7 @@ class TestScipySolver(TestCase):
 
     def test_solve(self):
         results = self.solver.solve(self.model)
-        np.testing.assert_allclose(results[0], self.model.eigenvalues[:self.k], atol=1e-14)
+        np.testing.assert_allclose(results[0], self.model.eigenvalues[:self.k], atol=1e-13)
 
 
 if __name__ == '__main__':

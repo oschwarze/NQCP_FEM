@@ -16,7 +16,7 @@ field named `Bvec`.
 
 import numpy as np
 import sympy
-from .functions import SymbolicFunction,NumericalFunction
+from .functions import SymbolicFunction,NumericalFunction,Function
 from . import functions as funcs
 
 import logging
@@ -147,7 +147,7 @@ class BandModel(UpdatableObject):
     @property
     def tensor_shape(self):
         
-        return self.post_processed_array().shape
+        return tuple(int(s) for s in self.post_processed_array().shape)
     
     @property
     def n_bands(self):
@@ -271,7 +271,7 @@ class BandModel(UpdatableObject):
     
     
     @auto_update
-    def numerical_array(self):
+    def numerical_array(self,replace_symbolic_functions=True):
         """
 
         creates a numpy array where the only free symbols left are x,y,z and k_x,k_y,k_z. THe ks are replaced with new symbols with the same name but commutative.
@@ -295,43 +295,20 @@ class BandModel(UpdatableObject):
         position_set = set(self.position_symbols)
         for sym,func in self.post_processed_functions().items():
             # if the function is symbolic, we replace it with its symbolic representation, else, we keep it as a symbol
-            if func is None:
-                if sym in sympy.symbols(__MAGNETIC_FIELD_NAMES__):
-                    var_dict[sym] = None # this may be overwritten later if A fields are specified. Otherwise and exception will be raised later
-                    continue
-                raise ValueError(f'function with symbol {sym} was not assigned a value')
             if isinstance(func,SymbolicFunction):
-                # substitue all parameters
-                func = func.expression
-                if any((s,s) in var_dict.items() for s in func.free_symbols):
-                    raise ValueError(f'Infinite recursion due to substituion of symbol with itself: {[s for s in func.free_syms if (s,s) in var_dict.items()]}')
-                func = func.subs(var_dict)
-                if position_set.union(func.free_symbols) != position_set:
-                    raise ValueError(f'Passed function had symbols not contained in the parameter-dict. Only x,y,z should be left but we have: {func.free_symbols}')
-                var_dict[sym] = func
+                if replace_symbolic_functions:
+                    # substitue all parameters
+                    func = func.expression
+                    if any((s,s) in var_dict.items() for s in func.free_symbols):
+                        raise ValueError(f'Infinite recursion due to substituion of symbol with itself: {[s for s in func.free_syms if (s,s) in var_dict.items()]}')
+                    func = func.subs(var_dict)
+                    if position_set.union(func.free_symbols) != position_set:
+                        raise ValueError(f'Passed function had symbols not contained in the parameter-dict. Only x,y,z should be left but we have: {func.free_symbols}')
+                    var_dict[sym] = func
+                else:
+                    var_dict[sym] = sym
 
-        
-                
-        
-        A=sympy.symbols(__VECTOR_FIELD_NAMES__) 
-        B=sympy.symbols(__MAGNETIC_FIELD_NAMES__)
-        
-        # Check if A and B are in the model, and if so that A is specified but B is not. In that case write B as the curl of A 
-        if (A[0] in var_dict.keys()) and (B[0] in var_dict.keys()):
-            if all(var_dict.get(a,None) is not None for a in A) and all(var_dict[b] is None for b in B):
-                for i in range(3):
-                    j = (i+1)%3
-                    k = (i+2)%3
-                    try:
-                        var_dict[B[i]]=sympy.diff(var_dict[A[k]],self.position_symbols[j])-sympy.diff(var_dict[A[j]],self.position_symbols[k])
-                    except Exception as err:
-                        raise Exception(f'unable to differentiate function {var_dict[A[k]]} wrt {self.position_symbols[j]} ') from err
-            elif any(var_dict.get(a,None) is not None for a in A):
-                raise TypeError('A fiel and/or B-field not correctly specified. Exactly one of them have to be completely specified')
-            else:
-                raise TypeError()
-                LOGGER.debug('weird A-B case happened')
-        
+
         
         var_dict.update({k:k for k in self.momentum_symbols})  #casts momentum symbols as commutative from now on!
         var_dict.update({k:k for k in self.position_symbols})  #add position symbols as themselves (do it after function spec to avoid infinite recursion)
@@ -417,12 +394,12 @@ class BandModel(UpdatableObject):
                 
                 
                 k_signature = k_component_signature(expand_term(term))
-                print(term,k_signature,expand_term(term))
                 arr = disassemble_dict.get(len(k_signature),np.zeros(array.shape+(spatial_dim,)*(len(k_signature)),'O'))
                 # k-s commute, and by convention we will always order them as k_x k_x ... k_x k_y k_y ... k_y k_z k_z ... k_z
                 arr_i = np.unravel_index(i,array.shape)+tuple(k_signature)
                 term = term.subs({sympy.symbols(r'\hbar'):sympy.symbols('hbar')})
-                addition =   sympy.lambdify(momentum_symbols,term)(1,1,1) if len(k_signature) else term 
+
+                addition =   term.subs({k:1 for k in momentum_symbols}) if len(k_signature) else term 
                 arr[arr_i] += addition*sympy.Mul(*piecewise_parts) # add the piecewise parts back on again
 
                 # add coefficient to array
@@ -563,11 +540,11 @@ class BandModel(UpdatableObject):
         """
         from . import _m_e
         if material_name == 'Ge':
-            parameter_dict = {r'\Delta_{0}': 0.296,
-                            r'\gamma_{1}': 13.38,
-                            r'\gamma_{2}': 4.24,
-                            r'\gamma_{3}': 5.69,
-                            r'\kappa': 3.41,
+            parameter_dict = {r'Delta_{0}': 0.296,
+                            r'gamma_{1}': 13.38,
+                            r'gamma_{2}': 4.24,
+                            r'gamma_{3}': 5.69,
+                            r'kappa': 3.41,
                             r'q': 0.06,
                             r'D_{u}': 3.3195,
                             r"D'_{u}": 5.7158,
@@ -575,7 +552,7 @@ class BandModel(UpdatableObject):
                             r'c_{12}': 4.13,
                             r'c_{44}': 6.83,
                             r'a': 5.65791,
-                            r'\epsilon': 16.5,
+                            r'epsilon': 16.5,
                             r'm': _m_e}
         else:
             raise ValueError(f'material name {material_name} not in database')
@@ -629,17 +606,24 @@ class BandModel(UpdatableObject):
         :param vector_potential: vector potential function. Must have length 3 and contain expressions which can be constant or depend on x,y,z (but not kx,ky,kz)
         :type vector_potential: list
         """
-        self.independent_vars['function_dict'][sympy.symbols(__VECTOR_FIELD_NAMES__[0])] = None if vector_potential is None else vector_potential[0]
-        self.independent_vars['function_dict'][sympy.symbols(__VECTOR_FIELD_NAMES__[1])] = None if vector_potential is None else vector_potential[1]
-        self.independent_vars['function_dict'][sympy.symbols(__VECTOR_FIELD_NAMES__[2])] = None if vector_potential is None else vector_potential[2]
+        
+        A=sympy.symbols(__VECTOR_FIELD_NAMES__,commutative=False) 
+        
+        
+        self.independent_vars['function_dict'][A[0]] = None if vector_potential is None else vector_potential[0]
+        self.independent_vars['function_dict'][A[1]] = None if vector_potential is None else vector_potential[1]
+        self.independent_vars['function_dict'][A[2]] = None if vector_potential is None else vector_potential[2]
         
         self.independent_vars['parameter_dict'][sympy.symbols('q_{c}')] = charge
         
         #cast as Functions
-        for A in __VECTOR_FIELD_NAMES__: 
-            if not isinstance(self.independent_vars['function_dict'][sympy.symbols(A)],funcs.Function):
-                f = self.independent_vars['function_dict'][sympy.symbols(A)] 
-                self.independent_vars['function_dict'][sympy.symbols(A)] = NumericalFunction(f,sympy.symbols(A),[0,1,2]) if isinstance(f,Callable) else SymbolicFunction(sympy.sympify(f),sympy.symbols(A))
+        for a in A: 
+            if not isinstance(self.independent_vars['function_dict'][a],funcs.Function):
+                f = self.independent_vars['function_dict'][a] 
+                if f is None:
+                    continue
+                
+                self.independent_vars['function_dict'][a] = NumericalFunction(f,a,[0,1,2]) if isinstance(f,Callable) else SymbolicFunction(sympy.sympify(f),a)
                 
         
         
@@ -652,11 +636,51 @@ class BandModel(UpdatableObject):
             """
             K = model.momentum_symbols
             from . import constants
-            A= list(sympy.symbols(__VECTOR_FIELD_NAMES__))
+            A= list(sympy.symbols(__VECTOR_FIELD_NAMES__,commutative=False))
             substituted_array = array.subs({K[i]:(K[i]+sympy.symbols('q_{c}')*A[i]/constants['hbar']) for i in range(3)})
             return substituted_array
 
         self.independent_vars['postprocessing_function_specification']['A-field'] = vector_potential_adder
+        
+        
+        def magnetic_field_curl_of_A(func_dict,model):
+        
+            A=sympy.symbols(__VECTOR_FIELD_NAMES__,commutative=False) 
+            B=sympy.symbols(__MAGNETIC_FIELD_NAMES__,commutative=False)
+            new_dict = func_dict.copy()
+            
+            
+            for b in B:
+                if func_dict.get(b,None) is not None:
+                    raise ValueError(f'Bot magnetic field and vector potential were specified for the model. When vector potentials are included in the model, the magnetic field is computed automatically')
+
+        # substitue B for curl of A  
+            for i in range(3):
+                j = (i+1)%3
+                k = (i+2)%3
+                
+                def numerical_B_factory(ai,aj):
+                    def B_func(x,y=None,z=None):
+                        return ai(x,y,z)-aj(x,y,z)
+                    return B_func   
+                
+                akj = func_dict[A[k]].derivative(j)
+                ajk =func_dict[A[j]].derivative(k)
+                
+                if any(isinstance(a,NumericalFunction) for a in (A[j],A[k])):
+                    spatial_deps = [i for i in range(3) if i in akj.spatial_dependencies+ajk.spatial_dependencies]
+                    b_function = NumericalFunction(numerical_B_factory(akj,ajk),B[i],spatial_deps)
+                else:
+                    b_function = SymbolicFunction(akj.expression-ajk.expression,B[i])
+                    
+                    
+                new_dict[B[i]]= b_function #func_dict[A[k]].derivative(j) -func_dict[A[j]].derivative(k)
+                
+            return new_dict
+
+        
+            
+        self.independent_vars['function_postprocessing_spec']['A-field'] = magnetic_field_curl_of_A
         
         return self
 
@@ -764,8 +788,6 @@ class BandModel(UpdatableObject):
     # region z-confinement
     def add_z_confinement(self,nz_modes,z_confinement_type,lz=None,omega=None):
         """Evaluates the z-direction on a finite set of basis vectors depending on the shape of the z-confinement.
-
-
         Args:
             lz (float): size of the system in the z-direction
             nz_modes (int): number of z-modes
@@ -912,13 +934,14 @@ class BandModel(UpdatableObject):
             new_dict = funcs.copy()
             # add all the new functions from projecting as well
             for f in funcs.values():
-                
-                new_dict.update(f.project_to_basis([2],[model.independent_vars['constants'][sympy.symbols(r'n_{z-modes}')]],z_confinement_type,**eval_kwargs)[1])
+                if f is not None:
+                    new_dict.update(f.project_to_basis([2],[model.independent_vars['constants'][sympy.symbols(r'n_{z-modes}')]],z_confinement_type,**eval_kwargs)[1])
             return new_dict
         
         self.independent_vars['function_postprocessing_spec']['z-confinement'] = z_confinement_functions_processor
         # For the functions that depend on z, we need to 
         
+        self.spatial_dim -=1
         return self
         
 
@@ -1002,7 +1025,7 @@ class FreeFermion(BandModel):
             B = sympy.Array([dd(Ay,z)-dd(Az,x),dd(Az,x)-dd(Ax,z),dd(Ax,y)-dd(Ay,x)])
             """
         else:
-            Bx,By,Bz = sympy.symbols(__MAGNETIC_FIELD_NAMES__)
+            Bx,By,Bz = sympy.symbols(__MAGNETIC_FIELD_NAMES__,commutative=False)
             B = sympy.Array([Bx,By,Bz])
             
             Bvec = (None,None,None) if Bvec is None else Bvec
@@ -1010,9 +1033,9 @@ class FreeFermion(BandModel):
         
             #cast as Functions
             for b in __MAGNETIC_FIELD_NAMES__: 
-                if not isinstance(self.independent_vars['function_dict'][sympy.symbols(b)],funcs.Function):
-                    f = self.independent_vars['function_dict'][sympy.symbols(b)] 
-                    self.independent_vars['function_dict'][sympy.symbols(b)] = NumericalFunction(f,sympy.symbols(b),[0,1,2]) if isinstance(f,Callable) else SymbolicFunction(sympy.sympify(f),sympy.symbols(b))
+                if not isinstance(self.independent_vars['function_dict'][sympy.symbols(b,commutative=False)],funcs.Function):
+                    f = self.independent_vars['function_dict'][sympy.symbols(b,commutative=False)] 
+                    self.independent_vars['function_dict'][sympy.symbols(b,commutative=False)] = NumericalFunction(f,sympy.symbols(b,commutative=False),[0,1,2]) if isinstance(f,Callable) else SymbolicFunction(sympy.sympify(f),sympy.symbols(b,commutative=False))
                     
         
         
@@ -1092,11 +1115,11 @@ class LuttingerKohnHamiltonian(BandModel):
             
             
         ss = lambda n:sympy.symbols(n)
-        H_LK = ss(r'\gamma_{1}')* (K[0]**2+ K[1]**2+ K[2]**2)*Id
+        H_LK = ss(r'gamma_{1}')* (K[0]**2+ K[1]**2+ K[2]**2)*Id
         for i in range(3):
             j = (i+1)%3
             k = (i+2)%3
-            H_LK = H_LK - ss(r'\gamma_{3}')*((J[j] @ J[k]+J[k]@J[j])*(K[j]*K[k]+K[k]*K[j])) - 2*ss(r'\gamma_{2}')*(J2[i]-Jsq/3)*K[i]**2
+            H_LK = H_LK - ss(r'gamma_{3}')*((J[j] @ J[k]+J[k]@J[j])*(K[j]*K[k]+K[k]*K[j])) - 2*ss(r'gamma_{2}')*(J2[i]-Jsq/3)*K[i]**2
         
         from . import constants
         hbar =  constants['hbar']
@@ -1117,7 +1140,7 @@ class LuttingerKohnHamiltonian(BandModel):
         super().__init__(H_LK,spatial_dim,unit_convention)
         
         ss = lambda n:sympy.symbols(n)
-        self.independent_vars['parameter_dict'].update({ss(r'\gamma_{1}'):gamma1, ss(r'\gamma_{2}'):gamma2,ss(r'\gamma_{3}'):gamma3,ss('m'):mass})
+        self.independent_vars['parameter_dict'].update({ss(r'gamma_{1}'):gamma1, ss(r'gamma_{2}'):gamma2,ss(r'gamma_{3}'):gamma3,ss('m'):mass})
 
     def rotate_crystallographic_direction(self,theta=None,phi=None):
         """Performs a the postprocessing step of rotating the coordinate system, such that the coordinates are not aligned with the crystallographic axis. 
@@ -1171,14 +1194,39 @@ class LuttingerKohnHamiltonian(BandModel):
             
             
         # add magnetic field symbols to parameter dict 
-        Bsym = sympy.symbols(__MAGNETIC_FIELD_NAMES__)
+        Bsym = sympy.symbols(__MAGNETIC_FIELD_NAMES__,commutative=False)
         Bx = None if B is None else B[0]
         By = None if B is None else B[1]
         Bz = None if B is None else B[2]
-        kappa_sym,q_sym = sympy.symbols(r'\kappa,q')
-        self.independent_vars['function_dict'].update({Bsym[i]:b for i,b in enumerate((Bx,By,Bz))})
-        self.independent_vars['parameter_dict'][kappa_sym] = kappa
-        self.independent_vars['parameter_dict'][q_sym] = q
+        
+        Bfuncs = []
+        for i,b in enumerate((Bx,By,Bz)):
+            
+            if b is not None and not isinstance(b,Function):
+                if isinstance(b,Callable):
+                    Bfuncs.append(NumericalFunction(b,Bsym[i],None))
+                else:
+                    Bfuncs.append(SymbolicFunction(b,Bsym[i]))
+            else:
+                Bfuncs.append(b)
+        
+        
+        kappa_sym,q_sym = sympy.symbols(r'kappa,q')
+        self.independent_vars['function_dict'].update({Bsym[i]:b for i,b in enumerate((Bfuncs))})
+
+        params = self.independent_vars['parameter_dict']
+        if kappa_sym in params:
+            if kappa is not None:
+                params[kappa_sym] = kappa
+        else:
+                params[kappa_sym] = kappa
+            
+        if q_sym in params:
+            if q is not None:
+                params[q_sym] = q
+        else:
+                params[q_sym] = q
+            
         
         Zeeman_term = sympy.Matrix([[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]])
         for i in range(3):

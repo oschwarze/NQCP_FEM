@@ -50,7 +50,8 @@ def expand_term(term,split_pow=True):
 
     for t in term:
         #print(t,isinstance(t,sympy.Pow)),#t.args[0] in (Kx,Ky,Kz))
-        if split_pow and ( isinstance(t,sympy.Pow) and t.args[0] not in (X,Y,Z)+(sympy.symbols('x,y,z'))):
+        if split_pow and ( isinstance(t,sympy.Pow) and (not t.args[0].is_constant(Kx,Ky,Kz) or any(s.name[:-3] == '(x)' for s in t.args[0].free_symbols))):
+            # split up Kx**2 into Kx,Kx or V(x)**2 into V(x),V(x) etc.
             split.extend([t.args[0]]*t.args[1])
         else:
             split.append(t)
@@ -74,26 +75,42 @@ def derivative_of_function(symbol,pos_sym):
     else:
         conjugate=False
     
-    symbol_name = symbol.name[:-3]
-    if symbol_name[-1] != '}':
-        name = symbol_name + '_{('+pos_sym.name+')}(x)'
-    else:
-        derivatives = re.search(r'_\{\((.*)\)\}',symbol_name).group(1)
-        Xs = derivatives.count('x')
-        Ys = derivatives.count('y')
-        Zs = derivatives.count('z')
-        
-        if pos_sym.name == 'x':
-            Xs +=1
-        elif pos_sym.name == 'y':
-            Ys +=1
-        else:
-            Zs +=1
-        bare_name = re.search('(.*)_{',symbol_name).group(1)
-        subscript = ('').join(['x']*Xs+['y']*Ys+['z']*Zs)
-        name = bare_name + '_{('+subscript+')}(x)'
     
-    derivative = sympy.symbols(name,commutative=False)
+    
+    symbol_name = symbol.name[:-3]
+    # get the suffix
+    suffix = re.search('(.*)_\{(.*)\}(.*)',symbol_name)
+    if suffix is None:
+        name = symbol_name + '_{('+pos_sym.name+')}(x)'
+    
+    else:
+        bare_name = (suffix.group(1),suffix.group(3))
+        suffix = suffix.group(2)
+        
+        derivatives = re.search(r'(.*)\((.*)\)',suffix)
+        if derivatives is None:
+            deri_suff =f'{pos_sym.name}'
+            base_suffix = suffix
+        else:
+            deris = derivatives.group(2)
+            Xs = deris.count('x')
+            Ys = deris.count('y')
+            Zs = deris.count('z')
+        
+            if pos_sym.name == 'x':
+                Xs +=1
+            elif pos_sym.name == 'y':
+                Ys +=1
+            else:
+                Zs +=1
+                
+        
+            
+            deri_suff  = ('').join(['x']*Xs+['y']*Ys+['z']*Zs)
+            base_suffix = derivatives.group(1)
+        name = bare_name[0] + '_{'+base_suffix+'('+deri_suff+')}'+bare_name[1]+'(x)'
+    
+    derivative = sympy.Symbol(name,commutative=False)
     if conjugate: # conjugat before mul to avoid conjugating other factor as well
         derivative = sympy.conjugate(derivative)
     if post_mul is not None:
@@ -321,15 +338,17 @@ def array_sort_out_polynomials(expression:sympy.Array,symbols):
     
     tuple_dict = {}
     
-    for i,expr in np.array(expression).ravel():
+    for i,expr in enumerate(np.array(expression).ravel()):
         parts = sort_out_polynomials(expr,symbols)
         for p in parts:
             # put the parts into their respective tuple arrays
             if p[0] not in tuple_dict:
                 arr = [sympy.sympify(0)]*len(expression) # flattened version of array for easier indexing
+                tuple_dict[p[0]] = arr
             else:
                 arr = tuple_dict[p[0]]
             arr[i] += p[1] # add the coefficient to the array
+            
     
     # reshape into arrays
     return_dict = {k:sympy.Array(a).reshape(*expression.shape) for k,a in tuple_dict.items()}

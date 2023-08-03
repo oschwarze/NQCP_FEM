@@ -45,26 +45,8 @@ class GMatrix():
 			self._matrix,ground_state_pair = self.compute_g_matrix()
 			self._ground_state_pair = ground_state_pair
 		return self._ground_state_pair
-	def compute_g_matrix(self,param_dict = None,return_ground_state_pair=False,covariant_transform = False,precomputed_solution=None,**spin_gap_kwargs):
-		"""
-		Compute the g_matrix of the band model. Default is to use the parameters of the model, but alterntive values can be supplied
-		:param dict param_dict: alternative parameter specification to use (only the ones different from the models
-		parameters need to be supplied)
-		:param dict eig_solve_kwargs: kwargs for the .get_eigenvectors method of envelope_model
-		:param tuple(np.ndarray.np.ndarray|None precomputed_solution: If the model has already been solved
-		:return:
-		"""
-		# currently only the .add_LK_magnetic_field magnetic field is supported. This only works for magnetic terms
-		# that are independent of position (so both B field and g_tensor must be homogenous in position)
-		from copy import deepcopy
-		band_model = deepcopy(self.envelope_model.band_model) 
-		if all(sympy.symbols(n,commutative=False) not in band_model.post_processed_functions() for n in __MAGNETIC_FIELD_NAMES__) or all(sympy.symbols(n,commutative=False) not in band_model.post_processed_functions() for n in __VECTOR_FIELD_NAMES__):
-			raise ValueError(f'band model had no magnetic term. g matrix can only be computed for band models with magnetic terms defined')
 
-		# replace all band_model parameters with zerofunction
-		band_model.independent_vars['function_dict'].update({sympy.symbols(n,commutative=False):funcs.SymbolicFunction(sympy.sympify(0),sympy.symbols(n,commutative=False)) for n in __MAGNETIC_FIELD_NAMES__+__VECTOR_FIELD_NAMES__})
-
-		# determine relevant symbols for G-matrix
+	def __make_M_operator__(self):
 		Ax,Ay,Az = sympy.symbols(__VECTOR_FIELD_NAMES__,commutative=False)
 		if any(A in self.envelope_model.band_model.independent_vars['function_dict'] for A in (Ax,Ay,Az)):
 			# ordered as flattened version oaf M_ij = d_j(A_i) where d_j is derivative in direciont j and A_i is field in direction i
@@ -76,9 +58,9 @@ class GMatrix():
 			relevant_symbols = []
 		
 		# add magnetic field to this 
-		relevant_symbols += [sympy.symbols(__MAGNETIC_FIELD_NAMES__,commutative=False)]
+		relevant_symbols.extend(sympy.symbols(__MAGNETIC_FIELD_NAMES__,commutative=False))
 
-		H = sympy.Array(band_model.numerical_array()) # make numerical so we don't have to bother with constants and parameters
+		H = sympy.Array(self.envelope_model.band_model.numerical_array(replace_symbolic_functions=False)) # make numerical so we don't have to bother with constants and parameters
 		aranged_H = symb.arange_ks_array(H,self.envelope_model.k_signature)
 
 		# assume from now on that the position if the Ks is fixed so we can make the commutative
@@ -101,21 +83,49 @@ class GMatrix():
 			My_parts = My_parts + decomposed_H.get(single_one(3*0+2),blank) - decomposed_H.get(single_one(3*2+0),blank) #dzAx-dxAz
 			Mz_parts = Mz_parts + decomposed_H.get(single_one(3*0+2),blank) - decomposed_H.get(single_one(3*2+0),blank) #dxAy-dyAx
 
+		#cast each Mx,My,Mz as an abstract operator
+		observable_constructor = self.envelope_model.construct_observable
+		Mx = observable_constructor(Mx_parts)
+		My = observable_constructor(My_parts)
+		Mz = observable_constructor(Mz_parts)
+		return Mx,My,Mz
 
 
-		raise NotImplementedError('todo: determine matrix of expression linear in the relevant symbols')
 
+	def compute_g_matrix(self,param_dict = None,return_ground_state_pair=False,covariant_transform = False,precomputed_solution=None,**spin_gap_kwargs):
+		"""
+		Compute the g_matrix of the band model. Default is to use the parameters of the model, but alterntive values can be supplied
+		:param dict param_dict: alternative parameter specification to use (only the ones different from the models
+		parameters need to be supplied)
+		:param dict eig_solve_kwargs: kwargs for the .get_eigenvectors method of envelope_model
+		:param tuple(np.ndarray.np.ndarray|None precomputed_solution: If the model has already been solved
+		:return:
+		"""
+		# currently only the .add_LK_magnetic_field magnetic field is supported. This only works for magnetic terms
+		# that are independent of position (so both B field and g_tensor must be homogenous in position)
+		from copy import deepcopy
+		band_model = deepcopy(self.envelope_model.band_model) 
+		if all(sympy.symbols(n,commutative=False) not in band_model.post_processed_functions() for n in __MAGNETIC_FIELD_NAMES__+__VECTOR_FIELD_NAMES__) :
+			raise ValueError(f'band model had no magnetic term. g matrix can only be computed for band models with magnetic terms defined')
 
+		# replace all band_model parameters with zerofunction
+		band_model.independent_vars['function_dict'].update({sympy.symbols(n,commutative=False):funcs.SymbolicFunction(sympy.sympify(0),sympy.symbols(n,commutative=False)) for n in __MAGNETIC_FIELD_NAMES__+__VECTOR_FIELD_NAMES__})
+
+		# Determine the M operator components:
+		M= self.__make_M_operator__()
+		
+		# determine the ground state Kramer's pair
 		if precomputed_solution is None:
 			solution = self.solver.solve(self.envelope_model)
 		else:
 			solution = precomputed_solution
 		gap, states, has_intermediate = find_spin_gap(solution, self.envelope_model, **spin_gap_kwargs)
 		from .observables import spin,gram_schmidt_orthogonalization
-		if True:
+		do_GS = False
+		if do_GS:
 			states = gram_schmidt_orthogonalization(states) # orthogonalize the states (in case numerics has had a hard time doing this)
 			# This shouldn't be wrong in any way, as we know that the gs kramers pair is degenerate, and the two solutions
-			# are linear independent, so we can convert them to an ONB of the ground state subspace, and the two solutions
+			# are linear independent, so we can convert them to an ONB of the ground state subspace.
 		from . import UNIT_CONVENTION, _hbar
 		from .fenics import FEniCsModel
 		plot = 0
@@ -154,18 +164,24 @@ class GMatrix():
 		right_i = [i for i in range(4, 4 + solution_dims, 2)]  # even indices index rows (start from 4 since 0,1,2,3 are reserved)
 		left_i = [i for i in range(5, 4 + solution_dims, 2)] #  odd indices index columns
 
-		# output is indexed as (coordinate,left_state,right_state)
 		gs_pos, _ = self.envelope_model.positional_rep(states[0])
 		ex_pos, _ = self.envelope_model.positional_rep(states[1])
 
 		states = np.stack([gs_pos,ex_pos],axis=0)
-		M_mel = np.einsum(states.conj(),[1,]+left_i+[0,],M_parts,[3]+C_indices,states,[2,]+right_i+[0,],[3,1,2])
 
+		M_projection = np.zeros((3,2,2),dtype='complex') # n,j,k with n being indexing which M, and j,k which of the basis vectors
 
+		for n in range(3):
+			for j in range(2):
+				for k in range(2):
+					M_projection[n,j,k] = M[n].mel(states[j],states[k])
+        #		M_mel = np.einsum(states.conj(),[1,]+left_i+[0,],M_parts,[3]+C_indices,states,[2,]+right_i+[0,],[3,1,2])
+
+		
 		# NB: factor 2 comes from the fact that we assume that the two states have spin 1/2 i.e. S operator is \hbar * paulis but this will not be the case for LK hamiltonian
-		g_matrix = -2/_mu_B * np.vstack([np.real(M_mel[:,0,1]),
-		                               np.imag(M_mel[:,0,1]),
-		                               np.real(M_mel[:,1,1])]) #last np.real is just to make the matrix elements all completely real (it shouldn't discard anything above machine precision)
+		g_matrix = -2/_mu_B * np.vstack([np.real(M_projection[:,0,1]),
+		                               np.imag(M_projection[:,0,1]),
+		                               np.real(M_projection[:,1,1])]) #last np.real is just to make the matrix elements all completely real (it shouldn't discard anything above machine precision)
 		if return_ground_state_pair:
 			return g_matrix,states
 		return g_matrix

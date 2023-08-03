@@ -87,6 +87,7 @@ class Function(ABC):
     
 class SymbolicFunction(Function):
     def __init__(self,expression,symbol):
+        expression = sympy.sympify(expression)
         if isinstance(symbol,str):
             symbol = sympy.Symbol(symbol,commutative=False)
         if symbol.name[-3:] != '(x)':
@@ -245,6 +246,7 @@ class SymbolicFunction(Function):
         if not isinstance(__value,type(self)):
             return False
         return self.expression == __value.expression
+
 # region Analytically computed Matrices
 
 # region box system

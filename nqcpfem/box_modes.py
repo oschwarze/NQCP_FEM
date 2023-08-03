@@ -2,6 +2,8 @@ import numpy as np
 import scipy as sp
 import itertools
 
+from nqcpfem.observables import AbstractObservable
+
 from .updatable_object import auto_update
 from .envelope_function import EnvelopeFunctionModel,RectangleDomain
 from typing import Union
@@ -31,6 +33,11 @@ class BoxEFM(EnvelopeFunctionModel):
         if not isinstance(domain,RectangleDomain):
             raise TypeError(f'unsupported domain type. Only `RectangleDomain` is supported, got: {domain} ({type(domain)})')
         super().__init__(band_model, domain,**{'nx':nx,'ny':ny,'nz':nz})
+    
+    
+    def energy_scale(self):
+        return 1
+    
     
     @property
     def k_signature(self) -> str:
@@ -227,17 +234,18 @@ class BoxEFM(EnvelopeFunctionModel):
         
         H = symb.arange_ks_array(sympy.Array(self.band_model.numerical_array()),'all right')
         # substituate symbolic functions with their corresponding expressions
-        H = H.subs({f.symbol:f.expression for f in symb.present_functions(H) if isinstance(f,functions.SymbolicFunction)})
+        pp_funct_dict = self.band_model.post_processed_functions()
+        H = H.subs({f:pp_funct_dict[f].expression for f in symb.present_functions(H) if isinstance(pp_funct_dict[f],functions.SymbolicFunction)})
 
         # need these for checking polynmial order
         kx,ky,kz = sympy.symbols(symb.__MOMENTUM_NAMES__,commutative=True)
         x,y,z = sympy.symbols(symb.__POSITION_NAMES__,commutative=True)
-        Vs = tuple(f for f in symb.present_functions(H) if isinstance(f,functions.NumericalFunction))
+        Vs = tuple(f for f in symb.present_functions(H) if isinstance(pp_funct_dict[f],functions.NumericalFunction))
         
         # substiute Ks and xs for commuting ones now since they we have the order fixed from now on and need commuting symbols for interpreting the array as a polynomial
         subs_dict = {k:ck for k,ck in zip(self.band_model.momentum_symbols,(kx,ky,kz))}
         subs_dict.update({x:cx for x,cx in zip(self.band_model.position_symbols,(x,y,z))})
-        subs_dict.update({f:sympy.Symbol(f.name,commutative='False') for f in Vs})
+        subs_dict.update({f:sympy.Symbol(f.name,commutative=True) for f in Vs})
         
         H = H.subs(subs_dict)
         
@@ -245,11 +253,11 @@ class BoxEFM(EnvelopeFunctionModel):
         nx= self.independent_vars['nx']
         ny= self.independent_vars['ny']
         nz= self.independent_vars['nz']
-        projected_H = np.zeros(H.shape+(nx,nx,ny,ny,nz,nz))
+        projected_H = np.zeros(H.shape+(nx,nx,ny,ny,nz,nz),dtype='complex')
         
         
 
-        symbol_search = (kx,x,ky,y,kz,z)+Vs # order like this to make checking for conflicts easy
+        symbol_search = (kx,x,ky,y,kz,z)+tuple(sympy.Symbol(f.name,commutative=True) for f in Vs) # order like this to make checking for conflicts easy
         Lx = self.independent_vars['domain'].Lx
         Ly = self.independent_vars['domain'].Ly
         Lz = self.independent_vars['domain'].Lz
@@ -387,6 +395,9 @@ class BoxEFM(EnvelopeFunctionModel):
         
         for i,expr in enumerate(np.array(H).ravel()):
             
+            # skip trivial case:
+            if expr == 0:
+                continue
                         
             #check for piecewise:
             valid_piecewise,term = symb.extract_valid_bipartition_part(expr)
@@ -413,7 +424,7 @@ class BoxEFM(EnvelopeFunctionModel):
             else:    
                 # split up into polynomial in kx,ky,kz,x,y,z and the numerical Vs
                 parts = symb.sort_out_polynomials(term,symbol_search)
-                matrix_term = np.zeros((nx,nx,ny,ny,nz,nz))
+                matrix_term = np.zeros((nx,nx,ny,ny,nz,nz),dtype='complex')
                 
                 for (orders,coeff) in parts:
                     # project every part down to the box basis.
@@ -494,20 +505,20 @@ class BoxEFM(EnvelopeFunctionModel):
 
                                 matrices[(d,)] = x_mat
                     
-                    mat = np.array(combine_matrices(matrices)).astype(float)
+                    mat = np.array(combine_matrices(matrices)).astype('complex')
                     if not len(spatial_deps):
-                        mat *= float(coeff) # spatial dependence has not been accounted for
+                        mat *=complex(coeff) # spatial dependence has not been accounted for
                     matrix_term += mat
             
             ix = np.unravel_index(i,H.shape)
             projected_H[ix] += matrix_term
             
             
-            # we have to reorder the array and reshape to N x N matrix 
-            reordering = tuple(range(0,len(projected_H.shape),2))+ tuple(range(1,len(projected_H.shape),2))
-            
-            matrix_shape = np.prod(projected_H.shape[::2])
-            return projected_H.transpose(reordering).reshape((matrix_shape,matrix_shape))
+        # we have to reorder the array and reshape to N x N matrix 
+        reordering = tuple(range(0,len(projected_H.shape),2))+ tuple(range(1,len(projected_H.shape),2))
+        
+        matrix_shape = np.prod(projected_H.shape[::2])
+        return projected_H.transpose(reordering).reshape((matrix_shape,matrix_shape))
 
     def eigensolutions_to_eigentensors(self, eigensolutions):
         # transpose to get eigensolutions as listed along first axis:
@@ -529,8 +540,20 @@ class BoxEFM(EnvelopeFunctionModel):
         return 1  # identity as modes are orthogonal
 
     def project_operator(self, operator):
+
+        # sloppy workaround
+        band_m = bm.BandModel(operator,self.band_model.spatial_dim)
+        new_model = self.__class__(band_m,self.domain,*self.n_modes)
+        
+        return new_model.assemble_array()
         raise NotImplementedError('todo')
         return super().project_operator(operator)
+    
+    def construct_observable(self, operator: sympy.Array | np.ndarray) -> AbstractObservable:
+        if isinstance(operator,np.ndarray):
+            operator = sympy.Array(operator)
+        return BoxEFMObservable(operator,self)
+    
     
 def __k_mat__(order, L, n_modes):
     """
@@ -655,3 +678,56 @@ def evaluate_numerically(func,position_symbol,N_modes):
     # COmpute matrix expresion of a function numerically ()
     return 
     """
+
+    
+    from .observables import AbstractObservable
+class BoxEFMObservable(AbstractObservable):    
+    def __init__(self,operator:sympy.Array,envelope_model:BoxEFM):
+        self.operator = operator
+        self.projected_operator = envelope_model.project_operator(operator)
+        self.envelope_model = envelope_model
+        
+        
+    def mel(self,vector,other_vector=None):
+        """
+        The function `mel` calculates the matrix of the operator between tow vectors
+        :param vector: The `vector` parameter represents a vector that will be used in the calculation.
+        It is expected to be a numpy array.
+        :param other_vector: The parameter "other_vector" is an optional parameter that represents a
+        second vector. If this parameter is not provided, the function assumes that the second vector is
+        the same as the first vector (i.e., "vector")
+        :return: the result of applying the momentum operator to the given vectors. If the
+        `other_vector` parameter is not provided, the function assumes that the operator is being
+        applied to the same vector (`vector`) and returns the real part of the result. If the
+        `other_vector` parameter is provided, the function returns the complex result.
+        """
+        pass
+        if other_vector is None:
+            diagonal = True
+            other_vector = vector
+        else:
+            diagonal = False
+        # we need to flatten the vectors before applying the momentum operator
+        vector = vector.flatten() 
+        other_vector = other_vector.flatten()
+
+        res = vector.conjugate() @ self.projected_operator @ other_vector
+        if diagonal:
+            return np.real(res)
+        return res
+    
+    def apply(self,vector):
+        """
+        The function applies a linear operator to a vector and returns the result.
+        
+        :param vector: The `vector` parameter is a numpy array representing a vector
+        :return: the result of applying the k_operator to the flattened vector and reshaping it back to
+        the original shape.
+        """
+        
+        
+        shape = vector.shape
+        vector = vector.flatten()
+        res = self.projected_operator @ vector
+        return res.reshape(shape)
+    
