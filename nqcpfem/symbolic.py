@@ -49,7 +49,6 @@ def expand_term(term,split_pow=True):
             raise NotImplementedError(f"Didn't know how to split up term: {term} ({type(term)})")
 
     for t in term:
-        #print(t,isinstance(t,sympy.Pow)),#t.args[0] in (Kx,Ky,Kz))
         if split_pow and ( isinstance(t,sympy.Pow) and (not t.args[0].is_constant(Kx,Ky,Kz) or any(s.name[:-3] == '(x)' for s in t.args[0].free_symbols))):
             # split up Kx**2 into Kx,Kx or V(x)**2 into V(x),V(x) etc.
             split.extend([t.args[0]]*t.args[1])
@@ -76,7 +75,7 @@ def derivative_of_function(symbol,pos_sym):
         conjugate=False
     
     
-    
+    """
     symbol_name = symbol.name[:-3]
     # get the suffix
     suffix = re.search('(.*)_\{(.*)\}(.*)',symbol_name)
@@ -109,6 +108,14 @@ def derivative_of_function(symbol,pos_sym):
             deri_suff  = ('').join(['x']*Xs+['y']*Ys+['z']*Zs)
             base_suffix = derivatives.group(1)
         name = bare_name[0] + '_{'+base_suffix+'('+deri_suff+')}'+bare_name[1]+'(x)'
+    """
+    from . functions import decompose_func_name,assemble_func_name
+    base_name,derivatives,projections = decompose_func_name(symbol.name)
+
+    derivative_direction = 0 if pos_sym.name == 'x' else (1 if pos_sym.name =='y' else 2 )
+    derivatives = (derivative_direction,) if derivatives is None else sorted(derivatives+(derivative_direction,))
+    
+    name = assemble_func_name(base_name,derivatives,projections)
     
     derivative = sympy.Symbol(name,commutative=False)
     if conjugate: # conjugat before mul to avoid conjugating other factor as well
@@ -161,12 +168,10 @@ def permute_factors(term,start_i,end_i):
     return [term] + additional_terms
 
 def arange_ks(term,target_signature,signature_reduction_direction='left'):
-    #print(term,target_signature,symbols)
     current_signature = [not t.is_constant(Kx,Ky,Kz) for t in term]
     additional_terms = []
     while current_signature != target_signature:
         difference = [b-a for b,a in zip(target_signature,current_signature)]
-        #print(term,target_signature,current_signature)
         # take the index of the first -1 you see as the start put it into the first +1 you see:
         start_i = difference.index(-1)
         target_i = difference.index(1)
@@ -237,9 +242,6 @@ def arange_ks_array(array,signature_type:str,signature_reduction_direction:str='
             
             
             rearanged_elements.append(res)
-    for f in rearanged_elements:
-        print(f)
-        print(type(f))
         
     arranged_array=sympy.Array(rearanged_elements).reshape(*array.shape)
     return arranged_array
@@ -343,15 +345,15 @@ def array_sort_out_polynomials(expression:sympy.Array,symbols):
         for p in parts:
             # put the parts into their respective tuple arrays
             if p[0] not in tuple_dict:
-                arr = [sympy.sympify(0)]*len(expression) # flattened version of array for easier indexing
+                arr = sympy.Array([sympy.sympify(0)]*len(expression)).reshape(*expression.shape).as_mutable() # flattened version of array for easier indexing
                 tuple_dict[p[0]] = arr
             else:
                 arr = tuple_dict[p[0]]
-            arr[i] += p[1] # add the coefficient to the array
+            
+            arr[np.unravel_index(i,expression.shape)] += p[1] # add the coefficient to the array
             
     
-    # reshape into arrays
-    return_dict = {k:sympy.Array(a).reshape(*expression.shape) for k,a in tuple_dict.items()}
+    return_dict = {k:sympy.Array(a) for k,a in tuple_dict.items()}
     return return_dict
     
 
@@ -418,7 +420,6 @@ def extract_valid_bipartition_part(expr,func_dict=None):
                 remains = expr.subs({p:1 for p in valid_syms}) # ignore all peacewise for the valid ones
         else:
             remains = expr
-        print(valid_bipartitions,remains)       
     return valid_bipartitions,remains
                 
 
@@ -485,7 +486,7 @@ def symbolize_array(array,symbol_base_name):
         index_counter = 0 
         while True:
             index_counter +=1
-            next_name = '('+symbol_base_name+f')_{index_counter}(x)'
+            next_name = '('+symbol_base_name+')_{'+str(index_counter)+'}(x)'
             yield sympy.Symbol(next_name,commutative=False)
     
     all_position_syms = (X,Y,Z) +sympy.symbols('x,y,z')
@@ -543,3 +544,6 @@ def enforce_commutativity(expr):
     
     commutative_syms = {s:sympy.Symbol(s.name,commutative=True) for s in expr.free_symbols if not s.is_commutative}
     return expr.subs(commutative_syms)
+    
+if __name__ =='__main__':
+    pass

@@ -1,7 +1,9 @@
+from mimetypes import init
 import numpy as np
 import logging,sys
 from .band_model import BandModel,LuttingerKohnHamiltonian,FreeFermion,__MAGNETIC_FIELD_NAMES__,__VECTOR_FIELD_NAMES__
 from .envelope_function import EnvelopeFunctionModel
+from .updatable_object import UpdatableObject,auto_update
 from .spin_gap import find_spin_gap
 from petsc4py import PETSc
 import copy
@@ -9,12 +11,15 @@ import sympy
 from . import functions as funcs
 from . import symbolic as symb
 from .solvers import ModelSolver
+from nqcpfem import updatable_object
 
 LOG = logging.getLogger(__name__)
 LOG.addHandler(logging.StreamHandler(sys.stderr))
 LOG.setLevel(logging.DEBUG)
 
-class GMatrix():
+class GMatrix(UpdatableObject):
+
+	
 	def __init__(self,envelope_model,model_solver):
 		"""
 		Computes the g_matrix of a band model at some specific parameter point, as well as the partial derivatives wrt.
@@ -24,75 +29,96 @@ class GMatrix():
 		on B in order for this to make sense. The specific values of the parameters of the model are the ones with which respect we compute the g matrix.
 		:param ModelSolver model_solver: Solver to use when computing eigenstates.
 		"""
-		self.envelope_model = envelope_model
-		self.default_params = self.envelope_model.band_model.parameter_dict.copy()
-		self.solver = model_solver
+		
 		self._derivatives = {} # dict containing partial derivatives
 		self._tolerances = {} # dict containing the tolerances used in computing the partial derivatives
-		self._matrix = None
-		self._ground_state_pair = None
+
+		super(GMatrix, self).__init__(**{'envelope_model':envelope_model,'solver':model_solver})
 
 	@property
+	def envelope_model(self):
+		return self.independent_vars['envelope_model']
+
+	@envelope_model.setter
+	def envelope_model(self,value):
+		self.independent_vars['envelope_model'] = value
+
+	@property
+	def solver(self):
+		return self.independent_vars['solver']
+
+	@solver.setter
+	def solver(self,value):
+		self.independent_vars['solver'] = value
+
+	@auto_update
 	def matrix(self):
-		if self._matrix is None:
-			self._matrix,ground_state_pair = self.compute_g_matrix()
-			self._ground_state_pair = ground_state_pair
-		return self._matrix
+		return self.compute_g_matrix()[0]
 
-	@property
+	@auto_update
 	def ground_state_pair(self):
-		if self._ground_state_pair is None:
-			self._matrix,ground_state_pair = self.compute_g_matrix()
-			self._ground_state_pair = ground_state_pair
-		return self._ground_state_pair
+		return self.compute_g_matrix()[1]
 
+	@auto_update
 	def __make_M_operator__(self):
 		Ax,Ay,Az = sympy.symbols(__VECTOR_FIELD_NAMES__,commutative=False)
-		if any(A in self.envelope_model.band_model.independent_vars['function_dict'] for A in (Ax,Ay,Az)):
-			# ordered as flattened version oaf M_ij = d_j(A_i) where d_j is derivative in direciont j and A_i is field in direction i
-			# Indexing wrt flattend index measn that M_N = M_ij with N=3*i+j
-			has_A_field = True
-			relevant_symbols = [symb.derivative_of_function(a,x) for a in (Ax,Ay,Az) for x in (symb.X,symb.Y,symb.Z)]
-		else:
-			has_A_field=False
-			relevant_symbols = []
+		A_syms=[symb.derivative_of_function(a,x) for a in (Ax,Ay,Az) for x in (symb.X,symb.Y,symb.Z)]
+		A_field = np.array(A_syms).reshape(3,3)  # for easier indexing
+	
+		x_base_group = [__MAGNETIC_FIELD_NAMES__[0],A_field[2,1].name,A_field[1,2].name]
+		y_base_group = [__MAGNETIC_FIELD_NAMES__[1],A_field[0,2].name,A_field[2,0].name]
+		z_base_group = [__MAGNETIC_FIELD_NAMES__[2],A_field[1,0].name,A_field[0,1].name]
+
+		coordinate_bases = {'x':x_base_group,'y':y_base_group,'z':z_base_group}
 		
-		# add magnetic field to this 
-		relevant_symbols.extend(sympy.symbols(__MAGNETIC_FIELD_NAMES__,commutative=False))
-
 		H = sympy.Array(self.envelope_model.band_model.numerical_array(replace_symbolic_functions=False)) # make numerical so we don't have to bother with constants and parameters
-		aranged_H = symb.arange_ks_array(H,self.envelope_model.k_signature)
 
+		
+		# ddd all the symbols that have anything to do with Bx,By,Bz or the derivatives of A (derivatives, projections etc) to the relevat_symbols:
+		# for each function, take the base_name and the spatial derivatives and compare with the base groups
+		for f in H.free_symbols:
+			if f.name[-3:] == '(x)':
+				
+				f_base,derivs,proj = funcs.decompose_func_name(f.name)
+				
+				for d,name_list in coordinate_bases.items():
+					for name in name_list:
+						base_name ,name_derivs,_ = funcs.decompose_func_name(name)
+						if f_base == base_name and derivs == name_derivs:
+							coordinate_bases[d].append(f.name) 
+							break # base groups are disjoint
+				
+		relevant_symbols = sum((sympy.symbols(group) for group in coordinate_bases.values()),[])
 		# assume from now on that the position if the Ks is fixed so we can make the commutative
-
 		comm_relevant_symbols = symb.enforce_commutativity(relevant_symbols)
-		comm_H = symb.enforce_commutativity(aranged_H)
+		comm_H = symb.enforce_commutativity(H)
 		# deconstruct H into polynomials in the relevant symbols:
 		decomposed_H = symb.array_sort_out_polynomials(comm_H,comm_relevant_symbols)
 
 		# determine the Mx,My,Mz parts 
+
 		blank = sympy.Array.zeros(*comm_H.shape)
-		single_one = lambda n: tuple(0 if i!=n else 1 for i in range(N))
-		N = len(relevant_symbols)
-		Mx_parts = decomposed_H.get(single_one(N-3),blank)
-		My_parts = decomposed_H.get(single_one(N-2),blank)
-		Mz_parts = decomposed_H.get(single_one(N-1),blank)
+		M_parts = {'x':blank,'y':blank,'z':blank}
+		single_one = lambda n: tuple(0 if i!=n else 1 for i in range(len(relevant_symbols)))
+		for i,sym in enumerate(comm_relevant_symbols):
+			for d,name_list in coordinate_bases.items():
+				if sym.name in name_list:
+					
+					# we need minus sign in fron if symbol is diAj for ij anti-cyclic
+					sign = -1 if funcs.extract_base_function_name(sym.name,skip_derivatives=True) == name_list[2] else 1
+					M_parts[d] = M_parts[d] + sign*decomposed_H.get(single_one(i),blank)
+					break 
+			
 		
-		if has_A_field:
-			Mx_parts = Mx_parts + decomposed_H.get(single_one(3*2+1),blank) - decomposed_H.get(single_one(3*1+2),blank) #dyAz-dzAy
-			My_parts = My_parts + decomposed_H.get(single_one(3*0+2),blank) - decomposed_H.get(single_one(3*2+0),blank) #dzAx-dxAz
-			Mz_parts = Mz_parts + decomposed_H.get(single_one(3*0+2),blank) - decomposed_H.get(single_one(3*2+0),blank) #dxAy-dyAx
 
 		#cast each Mx,My,Mz as an abstract operator
 		observable_constructor = self.envelope_model.construct_observable
-		Mx = observable_constructor(Mx_parts)
-		My = observable_constructor(My_parts)
-		Mz = observable_constructor(Mz_parts)
+		Mx = observable_constructor(M_parts['x'])
+		My = observable_constructor(M_parts['y'])
+		Mz = observable_constructor(M_parts['z'])
 		return Mx,My,Mz
 
-
-
-	def compute_g_matrix(self,param_dict = None,return_ground_state_pair=False,covariant_transform = False,precomputed_solution=None,**spin_gap_kwargs):
+	def compute_g_matrix(self,param_dict = None,covariant_transform = False,precomputed_solution=None,**spin_gap_kwargs):
 		"""
 		Compute the g_matrix of the band model. Default is to use the parameters of the model, but alterntive values can be supplied
 		:param dict param_dict: alternative parameter specification to use (only the ones different from the models
@@ -104,22 +130,23 @@ class GMatrix():
 		# currently only the .add_LK_magnetic_field magnetic field is supported. This only works for magnetic terms
 		# that are independent of position (so both B field and g_tensor must be homogenous in position)
 		from copy import deepcopy
-		band_model = deepcopy(self.envelope_model.band_model) 
-		if all(sympy.symbols(n,commutative=False) not in band_model.post_processed_functions() for n in __MAGNETIC_FIELD_NAMES__+__VECTOR_FIELD_NAMES__) :
+		envelope_model = deepcopy(self.envelope_model) 
+		if all(sympy.symbols(n,commutative=False) not in envelope_model.band_model.post_processed_functions() for n in __MAGNETIC_FIELD_NAMES__+__VECTOR_FIELD_NAMES__) :
 			raise ValueError(f'band model had no magnetic term. g matrix can only be computed for band models with magnetic terms defined')
 
 		# replace all band_model parameters with zerofunction
-		band_model.independent_vars['function_dict'].update({sympy.symbols(n,commutative=False):funcs.SymbolicFunction(sympy.sympify(0),sympy.symbols(n,commutative=False)) for n in __MAGNETIC_FIELD_NAMES__+__VECTOR_FIELD_NAMES__})
+
+		envelope_model.band_model.independent_vars['function_dict'].update({sympy.symbols(n,commutative=False):funcs.SymbolicFunction(sympy.sympify(0),sympy.symbols(n,commutative=False)) for n in __MAGNETIC_FIELD_NAMES__+__VECTOR_FIELD_NAMES__})
 
 		# Determine the M operator components:
 		M= self.__make_M_operator__()
 		
 		# determine the ground state Kramer's pair
 		if precomputed_solution is None:
-			solution = self.solver.solve(self.envelope_model)
+			solution = self.solver.solve(envelope_model)
 		else:
 			solution = precomputed_solution
-		gap, states, has_intermediate = find_spin_gap(solution, self.envelope_model, **spin_gap_kwargs)
+		gap, states, has_intermediate = find_spin_gap(solution,envelope_model, **spin_gap_kwargs)
 		from .observables import spin,gram_schmidt_orthogonalization
 		do_GS = False
 		if do_GS:
@@ -134,10 +161,10 @@ class GMatrix():
 			import pyvista
 			import dolfinx
 			eigentensors = solution[1]
-			topology, cell_types, x = dolfinx.plot.create_vtk_mesh(self.envelope_model.function_space)
+			topology, cell_types, x = dolfinx.plot.create_vtk_mesh(envelope_model)
 			for i in range(len(solution[0])):
 				if i>-1:
-					vec,_ = self.envelope_model.positional_rep(eigentensors[i])
+					vec,_ = envelope_model.positional_rep(eigentensors[i])
 					wave_func = np.linalg.norm(vec.reshape((-1,vec.shape[-1])),axis=0)
 					p = pyvista.Plotter()
 
@@ -158,14 +185,14 @@ class GMatrix():
 
 
 		# indices 0,1,2,3 are reserved for indexing the vectors and spin contraction
-		solution_dims = len(self.envelope_model.band_model.tensor_shape) # how many indices are needed to express the tensor # how many indices are needed to express the tensor acting on the states
+		solution_dims = len(envelope_model.band_model.tensor_shape) # how many indices are needed to express the tensor # how many indices are needed to express the tensor acting on the states
 		# one positional index (0), 2 indices indexing which eigenvector (1,2), one index giving coordinate (x,y,z) of C (3)
 		C_indices = [i for i in range (4, 4 + solution_dims)] # and 2*n_spinor_dims indices to index elements of C_x, C_y, C_z
 		right_i = [i for i in range(4, 4 + solution_dims, 2)]  # even indices index rows (start from 4 since 0,1,2,3 are reserved)
 		left_i = [i for i in range(5, 4 + solution_dims, 2)] #  odd indices index columns
 
-		gs_pos, _ = self.envelope_model.positional_rep(states[0])
-		ex_pos, _ = self.envelope_model.positional_rep(states[1])
+		gs_pos, _ = envelope_model.positional_rep(states[0])
+		ex_pos, _ = envelope_model.positional_rep(states[1])
 
 		states = np.stack([gs_pos,ex_pos],axis=0)
 
@@ -182,9 +209,7 @@ class GMatrix():
 		g_matrix = -2/_mu_B * np.vstack([np.real(M_projection[:,0,1]),
 		                               np.imag(M_projection[:,0,1]),
 		                               np.real(M_projection[:,1,1])]) #last np.real is just to make the matrix elements all completely real (it shouldn't discard anything above machine precision)
-		if return_ground_state_pair:
-			return g_matrix,states
-		return g_matrix
+		return g_matrix,states
 
 	def derivative(self,params,step_sizes,overwrite=False,method='regular',**diff_kwargs):
 		"""
@@ -282,4 +307,3 @@ class GMatrix():
 		c = inner_product(vectors[0],basis[1])
 		d = inner_product(vectors[1],basis[1])
 		return self.compute_beta(vectors)*np.array([[a,c],[b,d]])
-

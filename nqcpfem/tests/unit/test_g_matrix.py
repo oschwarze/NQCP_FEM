@@ -82,7 +82,7 @@ class TestGMatrix(TestCase):
             vectors = np.stack([square*np.cos(angles),square*np.sin(angles),z_coords*strengths],axis=1)
             return vectors
 
-    def test_compute_g_matrix(self):
+    def test_matrix(self):
         from nqcpfem.g_matrix import GMatrix
 
         # For free particle we should just recover the magnetic field term of the Hamiltonian
@@ -105,7 +105,7 @@ class TestGMatrix(TestCase):
 
             gmatrix = GMatrix(efm_dict['FreeParticle'],solver)
 
-            result=gmatrix.compute_g_matrix(bounded_state_tolerance=bound_state_tol)
+            result=gmatrix.compute_g_matrix(bounded_state_tolerance=bound_state_tol)[0]
             # assert that result is just a change of basis away from facit:
             result_U,result_sigma,result_Vdagger = np.linalg.svd(result)
             np.testing.assert_allclose(np.sort(facit_sigma),np.sort(result_sigma),err_msg=f'FreeParticle for {name} failed to compute correct eigenvalues:')
@@ -132,8 +132,7 @@ class TestGMatrix(TestCase):
             efm_model = efm_dict['LK']
             gmatrix = GMatrix(efm_model,solver)
             bound_state_tol = None if name == 'box_efm' else 0.7
-            result=gmatrix.compute_g_matrix(bounded_state_tolerance=bound_state_tol)
-            print(result,np.linalg.svd(result)[1])
+            result=gmatrix.compute_g_matrix(bounded_state_tolerance=bound_state_tol)[0]
             for n,Bvec in enumerate(random_B_vectors):
                 # compute the gap using the GMatrix
                 u_vec = result @ Bvec.T
@@ -170,10 +169,38 @@ class TestGMatrix(TestCase):
                 from nqcpfem import UNIT_CONVENTION as U
                 print(f'{name}: expected gap {gmatrix_gap*U["J to eV"]}, determined gap {gap*U["J to eV"]} eV')
             
-    def test_matrix(self):
-        self.fail()
     def test_derivative(self):
         self.fail()
 
+    def test_make_M_operators_(self):
+        model = self.fenics_models['FreeParticle']
+        from nqcpfem import _mu_B
+        from nqcpfem.g_matrix import GMatrix
+        gmat = GMatrix(model,self.fenicssolver)
+        
+        M_op = gmat.__make_M_operator__()
+        # check that the abstract operators are sigma x,y,z
+        import sympy
+        facit_x = sympy.Array([[0,1],[1,0]])*_mu_B
+        facit_y = sympy.Array([[0,-1j],[1j,0]])*_mu_B
+        facit_z = sympy.Array([[1,0],[0,-1]])*_mu_B
+        
+        self.assertEqual(facit_x,M_op[0].abstract_operator)
+        self.assertEqual(facit_y,M_op[1].abstract_operator)
+        self.assertEqual(facit_z,M_op[2].abstract_operator)
+        
+        #check that adding a projection does not change anything except tensoring with identity
+        model.band_model.add_z_confinement(3,'box',1e-8)
+        
+        gmat = GMatrix(model,self.fenicssolver)
+        M_op = gmat.__make_M_operator__()
+        
+        facit_x =sympy.tensorproduct(facit_x,sympy.Array([[1,0,0],[0,1,0],[0,0,1]]))
+        facit_y =sympy.tensorproduct(facit_y,sympy.Array([[1,0,0],[0,1,0],[0,0,1]]))
+        facit_z =sympy.tensorproduct(facit_z,sympy.Array([[1,0,0],[0,1,0],[0,0,1]]))
+        
+        self.assertEqual(facit_x,M_op[0].abstract_operator)
+        self.assertEqual(facit_y,M_op[1].abstract_operator)
+        self.assertEqual(facit_z,M_op[2].abstract_operator)
 if __name__ =='__main__':
     unittest.main()

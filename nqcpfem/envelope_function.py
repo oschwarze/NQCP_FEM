@@ -39,11 +39,17 @@ class EnvelopeFunctionModel(UpdatableObject,ABC):
     @property
     def band_model(self)->BandModel:
         return self.independent_vars['band_model']
+    @band_model.setter
+    def band_model(self,value):
+        self.independent_vars['band_model'] = value 
 
     @property
     def domain(self)->Domain:
         return self.independent_vars['domain']
-
+    @domain.setter
+    def domain(self,value):
+        self.independent_vars['domain'] = value
+    
     @property
     #@abstractmethod
     def k_signature(self) -> str:
@@ -115,12 +121,6 @@ class EnvelopeFunctionModel(UpdatableObject,ABC):
         # Construct an AbstractObservable which can be aplied to the solutions of this model.
         pass
         
-        
-    def __getstate__(self):
-        state = self.__dict__.copy()
-        state['_array'] = None
-        return state
-
     
     def energy_scale(self):
         """

@@ -6,9 +6,8 @@ from nqcpfem.observables import AbstractObservable
 
 from .updatable_object import auto_update
 from .envelope_function import EnvelopeFunctionModel,RectangleDomain
+from .observables import Observable
 from typing import Union
-from . import _hbar
-from functools import partial
 import sympy
 from . import functions
 from . import band_model as bm
@@ -23,13 +22,12 @@ class BoxEFM(EnvelopeFunctionModel):
     (Tn,nx,ny,nz,Tm,mx,my,mz) and the eigenstates will be tensors of shpae (Tn,nx,ny,nz) where Tn are superindices representing the tensor shape of the band_model
     """
     
-    def __init__(self, band_model, domain, nx, ny, nz):
+    def __init__(self, band_model, domain, nx, ny=None, nz=None):
         """
         Box Modes for the EFM
         :param band_model:
         :param domain:
         """
-        self.n_modes = [nx, ny, nz]
         if not isinstance(domain,RectangleDomain):
             raise TypeError(f'unsupported domain type. Only `RectangleDomain` is supported, got: {domain} ({type(domain)})')
         super().__init__(band_model, domain,**{'nx':nx,'ny':ny,'nz':nz})
@@ -38,7 +36,9 @@ class BoxEFM(EnvelopeFunctionModel):
     def energy_scale(self):
         return 1
     
-    
+    @property
+    def n_modes(self):
+        return tuple(self.independent_vars[n] for n in ('nx','ny','nz'))
     @property
     def k_signature(self) -> str:
         return 'all right'
@@ -184,7 +184,7 @@ class BoxEFM(EnvelopeFunctionModel):
 
         if x_vals is None:
             # just reshape solutions so that last axis is what desribes the positional part of the solution
-            return vector.reshape(vector.shape[:-3]+(np.prod(vector.shape[-3:]),)),None
+            return vector.reshape(vector.shape[:-self.band_model.spatial_dim]+(np.prod(vector.shape[-self.band_model.spatial_dim:]),)),None
         elif isinstance(x_vals, int):
             n_points = [x_vals] * 3
             box_shape = [self.independent_vars['domain'].Lx, self.independent_vars['domain'].Ly, self.independent_vars['domain'].Lz]
@@ -196,6 +196,8 @@ class BoxEFM(EnvelopeFunctionModel):
         basis_evals = []
         L = [getattr(self.independent_vars['domain'],name) for name in ('Lx','Ly','Lz')]
         for i, n in enumerate(self.n_modes):
+            if n is None:
+                continue
             mode_wise_eval = []
             func_factory = __basis_function_factory__(L[i],use_sympy=False)
             for m in range(n):
@@ -223,41 +225,46 @@ class BoxEFM(EnvelopeFunctionModel):
 
     @property
     def __eigen_tensor_shape__(self):
-        return list(self.band_model.tensor_shape[::2]) + list(self.n_modes)
+        return list(self.band_model.tensor_shape[::2]) + [n for n in self.n_modes if n is not None]
 
     @auto_update
     def assemble_array(self, sparse=False):
         
         # Take post-processed Ham and cast as right-aligned
         
-        # unravel array and sort the terms into analytically computable terms (involving only Ks, or involving x,x**2 or Piecewise(1,x>0, etc.) (and relevant combinations thereof))
+        # unravel array and sort the terms into analytically computable terms (involving only Ks, or involving x,x**2 or Piecewise(1,x>0, etc.) (and relevant combinations thereof)
+        H = symb.enforce_commutativity(sympy.Array(self.band_model.numerical_array()))
         
-        H = symb.arange_ks_array(sympy.Array(self.band_model.numerical_array()),'all right')
-        # substituate symbolic functions with their corresponding expressions
-        pp_funct_dict = self.band_model.post_processed_functions()
-        H = H.subs({f:pp_funct_dict[f].expression for f in symb.present_functions(H) if isinstance(pp_funct_dict[f],functions.SymbolicFunction)})
-
         # need these for checking polynmial order
         kx,ky,kz = sympy.symbols(symb.__MOMENTUM_NAMES__,commutative=True)
         x,y,z = sympy.symbols(symb.__POSITION_NAMES__,commutative=True)
-        Vs = tuple(f for f in symb.present_functions(H) if isinstance(pp_funct_dict[f],functions.NumericalFunction))
+        Vs = tuple(f for f in symb.present_functions(H))
         
         # substiute Ks and xs for commuting ones now since they we have the order fixed from now on and need commuting symbols for interpreting the array as a polynomial
-        subs_dict = {k:ck for k,ck in zip(self.band_model.momentum_symbols,(kx,ky,kz))}
-        subs_dict.update({x:cx for x,cx in zip(self.band_model.position_symbols,(x,y,z))})
-        subs_dict.update({f:sympy.Symbol(f.name,commutative=True) for f in Vs})
-        
-        H = H.subs(subs_dict)
         
         
         nx= self.independent_vars['nx']
         ny= self.independent_vars['ny']
         nz= self.independent_vars['nz']
-        projected_H = np.zeros(H.shape+(nx,nx,ny,ny,nz,nz),dtype='complex')
+        N_modes = (nx,ny,nz)
+        position_ordering = [i for i in range(3) if (nx,ny,nz)[i] is not None]
+        if not len(position_ordering):
+            raise ValueError(f'no band_modes were present')
+        
+        
+        positional_shape = tuple()
+        for i in position_ordering:
+            positional_shape = positional_shape + (N_modes[i],N_modes[i])
+        
+        
+        
+        projected_H = np.zeros(H.shape+positional_shape,dtype='complex')
         
         
 
         symbol_search = (kx,x,ky,y,kz,z)+tuple(sympy.Symbol(f.name,commutative=True) for f in Vs) # order like this to make checking for conflicts easy
+        
+        
         Lx = self.independent_vars['domain'].Lx
         Ly = self.independent_vars['domain'].Ly
         Lz = self.independent_vars['domain'].Lz
@@ -278,7 +285,7 @@ class BoxEFM(EnvelopeFunctionModel):
             
             combi = []
             for d_tup in d_tuples:
-                combi.extend((np.array(matrix_dict[d_tup]).astype(float),tuple(indexing_tuples[d_tup])))
+                combi.extend((np.array(matrix_dict[d_tup]).astype(complex),tuple(indexing_tuples[d_tup])))
             
             combi.append(tuple(range(2*self.band_model.spatial_dim))) # output shape
             return np.einsum(*combi)
@@ -424,7 +431,7 @@ class BoxEFM(EnvelopeFunctionModel):
             else:    
                 # split up into polynomial in kx,ky,kz,x,y,z and the numerical Vs
                 parts = symb.sort_out_polynomials(term,symbol_search)
-                matrix_term = np.zeros((nx,nx,ny,ny,nz,nz),dtype='complex')
+                matrix_term = np.zeros(positional_shape,dtype='complex')
                 
                 for (orders,coeff) in parts:
                     # project every part down to the box basis.
@@ -433,15 +440,17 @@ class BoxEFM(EnvelopeFunctionModel):
                         # numerical functions are involved
                         # we are not dealing with polynomials in the ks and xs
                     
+                    # determine the spatial dependency of this term
                     spatial_deps =[]
                     for f,o in zip(Vs,orders):
                         if o is None or o>0:
-                            spatial_deps.append(set(f.spatial_dependencies))
+                            func = self.band_model.post_processed_functions()[sympy.Symbol(f.name,commutative=False)]
+                            spatial_deps.append(set(func.spatial_dependencies))
                     
                     
                     for d in range(3):
                         if orders[2*d] is None or orders[2*d+1] is None:
-                            spatial_deps.append([d])
+                            spatial_deps.append([d]) # in case there are non-polynomial dependencies
                     # combine spatial dependencies into disjoint sets
                     while any(len(a.intersection(b)) for a in spatial_deps for b in spatial_deps if a != b) and len(spatial_deps)>1:
                         for i,a in enumerate(spatial_deps[:-1]):  # while loop assures that len>1
@@ -457,6 +466,7 @@ class BoxEFM(EnvelopeFunctionModel):
                     # Coordinates in `spatial deps` are now grouped together according to hwo the must beevaluated. Coordinates which are not present can be computed analytically. 
                     matrices = {}
                     
+                    #numerically integrate the non-analytiacl parts
                     for coordinate_grp in spatial_deps:
                         raise NotImplementedError('this needs reworking: we need to account for the coefficient exactly once, but it can have non-polynomial terms.')
                         # COmbine all directions together which have None and integrate those combined with the coeff. the others directiosn can be numerically/analyticall integrted
@@ -481,9 +491,9 @@ class BoxEFM(EnvelopeFunctionModel):
                         matrices[tuple(coordinate_grp)] = functions.numerically_compute_matrix(numerical_integration(t,relevant_directions),ranges,N_modes)
 
                     
-                    for d in range(3):
+                    # analytical computation. Each direction is separated so it's a one-variable problem.
+                    for d in position_ordering:
                         if all(d not in grp for grp in spatial_deps):
-                            # analytical computation. Each direction is separated so it's a one-variable problem.
                             kd_o = orders[2*d] # order of k operator in direction d
                             xd_o = orders[2*d+1] # order of x operator in direction d
                             
@@ -507,7 +517,7 @@ class BoxEFM(EnvelopeFunctionModel):
                     
                     mat = np.array(combine_matrices(matrices)).astype('complex')
                     if not len(spatial_deps):
-                        mat *=complex(coeff) # spatial dependence has not been accounted for
+                        mat *=complex(coeff) # has been included if there has bee numerical parts but not if everything is analytical
                     matrix_term += mat
             
             ix = np.unravel_index(i,H.shape)
@@ -540,7 +550,6 @@ class BoxEFM(EnvelopeFunctionModel):
         return 1  # identity as modes are orthogonal
 
     def project_operator(self, operator):
-
         # sloppy workaround
         band_m = bm.BandModel(operator,self.band_model.spatial_dim)
         new_model = self.__class__(band_m,self.domain,*self.n_modes)
@@ -549,10 +558,19 @@ class BoxEFM(EnvelopeFunctionModel):
         raise NotImplementedError('todo')
         return super().project_operator(operator)
     
-    def construct_observable(self, operator: sympy.Array | np.ndarray) -> AbstractObservable:
+    def construct_observable(self, operator: sympy.Array | np.ndarray) -> AbstractObservable|Observable:
         if isinstance(operator,np.ndarray):
             operator = sympy.Array(operator)
-        return BoxEFMObservable(operator,self)
+        
+        operator = sympy.sympify(operator)
+        if operator.is_constant(self.band_model.momentum_symbols+self.band_model.position_symbols):
+            # an observale will always act on all tensor indices
+            tensor_index = list(range(int(len(self.band_model.tensor_shape)/2)))
+            
+            return Observable(operator,tensor_index)
+            
+        else:
+            return BoxEFMObservable(operator,self)
     
     
 def __k_mat__(order, L, n_modes):
@@ -684,9 +702,11 @@ def evaluate_numerically(func,position_symbol,N_modes):
 class BoxEFMObservable(AbstractObservable):    
     def __init__(self,operator:sympy.Array,envelope_model:BoxEFM):
         self.operator = operator
-        self.projected_operator = envelope_model.project_operator(operator)
-        self.envelope_model = envelope_model
+            
         
+        self.projected_operator = envelope_model.project_operator(operator)
+        
+        self.envelope_model = envelope_model
         
     def mel(self,vector,other_vector=None):
         """

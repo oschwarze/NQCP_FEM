@@ -1,5 +1,5 @@
 from unittest import TestCase
-from nqcpfem.gridsearch import MinimizationSearch
+from nqcpfem.parameter_search import MinimizationSearch
 class TestMinimizationSearch(TestCase):
 
     def setUp(self) -> None:

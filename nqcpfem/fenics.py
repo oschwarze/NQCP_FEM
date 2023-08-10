@@ -25,6 +25,7 @@ LOGGER.addHandler(logging.NullHandler())
 
 class FEniCsModel(envelope_function.EnvelopeFunctionModel):
     def __init__(self, band_model, domain,boundary_condition=None,function_class=('CG',1)):
+
         """
         EnvelopeFunctionModel which evaluates the k operator using finite element methods, built on FEniCSX. 	
         Given a band_model and a Domain, it can assemble a Hermitian matrix (and S-matrix) for solving the generalized eigenvalue problem
@@ -48,6 +49,16 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 else:
                     raise AttributeError(f'domain was missing required attribute: {attr}')
 
+        # check that FEM ordering of ks is performed      
+        k_ordering = band_model.independent_vars['model_defining_params'].get('k_signature_type',None)
+        if k_ordering is None:
+            LOGGER.warn(f'the k-ordering of the band model must be FEM, but it was not set. setting it to FEM wit left reduction direction')
+            band_model.fix_k_arrangement('FEM')
+        elif k_ordering != 'FEM':
+            raise ValueError(f'k-ordering of band model must be "FEM" but got {k_ordering}')
+        
+        
+        
         
         independent_vars = {'band_model':band_model,
                             'domain':domain,
@@ -60,15 +71,6 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
     def k_signature(self):
         return 'FEM'
         
-    def __getstate__(self):
-        state = super(FEniCsModel, self).__getstate__()
-        state['__S_matrix'] = None
-        state['__mesh__']= None
-        state['__function_space__']= None
-        state['__bc__']= None
-        state['__bilinear_form__']= None
-        return state
-    
     @auto_update
     def mesh(self):
         """Constructs the mesh of the system depending on number of spinor components, the domain, and the specified function class
@@ -236,28 +238,25 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
     def converted_functions(self):
 
         
-        from functools import partial
+        from .functions import SymbolicFunction,NumericalFunction
         converted_funcs = {}
+        symbolic_funcs = {}
         scalar_function_space = self.__make_function_space__(self.mesh(),self.independent_vars['function_class'],1) # interpolate the scalar functions as the same class as the trial and test functions
-        from typing import Callable
         fem_x = ufl.SpatialCoordinate(self.mesh())
         variables =  self.dolfinx_constants().copy()
         pos_syms = self.band_model.position_symbols
         variables.update({pos_syms[i]:fem_x[i] for i in range(self.band_model.spatial_dim)}) # type: ignore
-        constants = self.dolfinx_constants()
         for sym,func in self.band_model.post_processed_functions().items():
-            # convert the functions if they are sympy expresseions. If they are callable, we just use the spatial coordinate of dolfinx
-            if isinstance(func,sympy.Piecewise):
-                # we have to traverse through any sympy piecewise functions and convert them, since UFL stuff cannot handle regular comparison operators. 
-                # NB! There should'nt be any free symbols other than those contained in parameter_dict and constants as wells as x,y, and z in the piecewise expression.
-                # this is done becuase UFL types and sympy types DO NOT MIX and UFL types use special relation operators. 
-                converted_piecewise = convert_piecewise(func,__ufl_relations__,variables =variables)
-                converted_funcs[sym] = converted_piecewise
+            if isinstance(func,SymbolicFunction):
+                if isinstance(func.expression,sympy.Piecewise):
+                    # we have to traverse through any sympy piecewise functions and convert them, since UFL stuff cannot handle regular comparison operators. 
+                    # NB! There should'nt be any free symbols other than those contained in parameter_dict and constants as wells as x,y, and z in the piecewise expression.
+                    # this is done becuase UFL types and sympy types DO NOT MIX and UFL types use special relation operators. 
+                    converted_piecewise = convert_piecewise(func.expression,__ufl_relations__,variables =variables)
+                    converted_funcs[sym] = converted_piecewise
+                else:
+                    symbolic_funcs[sym] = func.expression
             else:
-                if not isinstance(func,Callable):
-                    #cast as function using lambdify. We create it as a partiel because sympy symbols and dolfinx constants don't play nice together
-                    full_func = sympy.lambdify(tuple(constants.keys())+self.band_model.position_symbols,func)
-                    func = partial(full_func,constants.values())
                 
                 # other functions are interpolated in the usual way
                 f = dolfinx.fem.Function(scalar_function_space)
@@ -265,7 +264,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 
                 f.interpolate(func)
                 converted_funcs[sym] = f 
-        return converted_funcs   
+        return symbolic_funcs,converted_funcs   
     
     @auto_update
     def dolfinx_constants(self):
@@ -311,43 +310,24 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
     @auto_update
     def ufl_form(self):
         
-        import ufl
-
-
         is_scalar_problem = self.independent_vars['band_model'].tensor_shape == (1,1)
         
         import sympy
-        # cast parameter as dolfinx constants, constants as floats, and position syms as dolfinx spatial coordinates
         
-        #new_param_dict = {k:dolfinx.fem.Constant(self.function_space, np.complex128(v)) for k,v in self.independent_vars['band_model'].parameter_dict.items() if k.name[-3:]!='(x)'}
-
-        # Interpolate all functions on the function space:
         
         new_param_dict = self.dolfinx_constants().copy()
-
-        self.__constants__ = new_param_dict
-
+        symbolic_funcs,numerical_funcs = self.converted_functions()
+        new_param_dict.update(numerical_funcs)
+        
         ufl_tensors = {}
-        
-        # make symbolic array with ENFORCED ordering of the Ks (one k acting on the trial_function and the rest acting on the test-function)
-        from .symbolic import arange_ks_array
-        from .functions import SymbolicFunction,NumericalFunction
-        symbolic_ordered_array = arange_ks_array(self.band_model.post_processed_array(),self.k_signature)
-        #replace symbolic expressions with their appropriate functions
-        
-        symbolic_ordered_array = symbolic_ordered_array.subs({v:f.expression for v,f in self.band_model.post_processed_functions().items() if isinstance(f,SymbolicFunction)})
-
-        if any(isinstance(f,NumericalFunction) for f in self.band_model.post_processed_functions().values()):
-            raise NotImplementedError('todo: INterpolate the numerical function onto the mesh')
-        
-        symbolic_tensor = self.band_model.__make_tensor_dict__(symbolic_ordered_array,self.band_model.spatial_dim)
-        
-        
-        for rank,tensor in symbolic_tensor.items():
+        for rank,tensor in self.band_model.symbolic_tensor_repr().items():
             
             # we first substitute everything into, then scale by the relevant parameters.
             
+            # replace symbolic functions with their symbolic expressions:
+            tensor = sympy.Array(tensor).subs(symbolic_funcs)
 
+            
             
             numerical_tensor = sympy.lambdify(new_param_dict.keys(),tensor,dummify=True)(*new_param_dict.values())
             scaling = new_param_dict['__energy_scale__']*np.complex128(self.length_scale()**rank)
@@ -464,6 +444,8 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         :return:
         """
 
+        
+        
         constants_dict = self.dolfinx_constants()
         
         # update the value of the constants based on the values stored in the band_model parameter_dict and constants dict:
@@ -551,6 +533,9 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
     
     @auto_update    
     def assemble_array(self, sparse=True): # only use old solution of user knows what he is doing!
+
+        
+        
         LOGGER.debug(f'assembling array with parameters: {self.independent_vars["band_model"].independent_vars["parameter_dict"]}')
 
         A = dolfinx.fem.petsc.assemble_matrix(self.bilinear_form(),self.dolfin_bc())#diagonal=1234e10)
@@ -777,6 +762,10 @@ class FEniCsObservable(AbstractObservable):
         #self.linear_form = dolfinx.fem.Expression(self.ufl_linear_form,self.envelope_model.function_space().element.interpolation_points())
     
     def mel(self,vector,other_vector =None):
+
+        if all(ss == 0 for ss in np.array(self.abstract_operator).ravel()):
+            return 0 # trivial case, which breaks FEniCs
+        
         vector = self.envelope_model.flatten_eigentensors(vector)
         if other_vector is None:
             other_vector = vector
