@@ -49,3 +49,7 @@ coverage.xml
 # Sphinx documentation
 docs/_build/
 .vscode/launch.json
+
+# experimental saves  and results
+*.save
+*.png
