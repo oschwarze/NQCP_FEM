@@ -13,7 +13,12 @@ class TestSymbolicFunctions(TestCase):
         self.assertEqual(FF(1,2,4),21)
         
         
-        self.fail('call with arrays as arguments')
+        import numpy as np
+        X_arr = np.arange(3*6).reshape(3,6)
+        res = FF(X_arr)
+        
+        np.testing.assert_allclose(res,X_arr[0]**2+X_arr[1]**2+X_arr[2]**2)
+        
         
     def test_compute_deriative(self):
 

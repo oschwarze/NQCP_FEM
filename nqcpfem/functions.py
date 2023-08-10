@@ -154,6 +154,14 @@ class SymbolicFunction(Function):
         return self._expression_
     
     def __call__(self,x,y=None,z=None):
+        if isinstance(x,np.ndarray) and y is None and z is None:
+            n_cords = x.shape[0]
+            call_tuple = (x[0],)
+            for i in range(1,n_cords):
+                call_tuple = call_tuple+(x[i],)
+            
+            return sympy.lambdify((X,Y,Z)[:n_cords],self.expression)(*call_tuple)
+        
         return self.expression.subs({X:x,Y:y,Z:z})
     
     def __compute_derivative__(self,name,directions,):
