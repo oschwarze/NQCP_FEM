@@ -16,9 +16,8 @@ field named `Bvec`.
 
 import numpy as np
 import sympy
-from .functions import SymbolicFunction,NumericalFunction,Function
+from .functions import SymbolicFunction,NumericalFunction,Function,PlaceHolderFunction
 from . import functions as funcs
-
 import logging
 from . import PETSc
 from typing import Any, Iterable,Union,Sequence,Annotated,Callable
@@ -35,7 +34,9 @@ from .updatable_object import UpdatableObject, auto_update,ComputedAttribute
     
 
 class BandModel(UpdatableObject):
-    __post_processor_ordering__ = ("OTHER","A-field","z-confinement","BdG")
+
+
+    __post_processor_ordering__ = ("OTHER","A-field","z-confinement","BdG",'K-ordering')
     __time_reversal_change_of_basis__ = None # this attr stores the change of basis that is involved in time-reversal of the model.
     def __init__(self,array:sympy.ImmutableDenseNDimArray,spatial_dim:int=3,unit_convention='SI') -> None:
         """This class describes the Hamiltonian of the system. In the array, the position variables must be symbols which are named ´x,y,z´ and the momentum operators must be symbols named ´k_x,k_y,k_z´.
@@ -44,10 +45,11 @@ class BandModel(UpdatableObject):
             spatial_dim (int, optional): Spatial dimension of the system. Defaults to 3.
         
         """
-        self.spatial_dim = spatial_dim
+        
+        
 
         # Dict containing all the attributes that could be changed from outside the instance.
-        independent_vars = {} 
+        independent_vars = {'spatial_dim':spatial_dim} 
         
         """ Hierarchy of expressions: 
         Computing the Final shape of the Hamiltonian is done in sequential steps and after each step the state is saved to avoid recomputing it. 
@@ -111,13 +113,12 @@ class BandModel(UpdatableObject):
         independent_vars['parameter_dict'] =   {s:None for s in independent_vars['preprocessed_array'].free_symbols if (s.name not in __MOMENTUM_NAMES__+__POSITION_NAMES__+constant_names) and (s.name[-3:] != '(x)')} #type: ignore
         
         independent_vars['function_dict']  = {s:None for s in independent_vars['preprocessed_array'].free_symbols if  s.name[-3:] == '(x)'} # type: ignore
-        independent_vars['function_postprocessing_spec'] = {}
         
         # Superconducting order parameter
         independent_vars['SC_Delta'] = None
         
         # unit_convention_stuff
-        if unit_convention == 'SI':
+        if unit_convention == 'SI' or unit_convention == {}:
             self.unit_convention = {} # todo: Allows for changing the unit convention to something different from SI base units
             
             independent_vars['unit_convention'] = {}
@@ -129,8 +130,10 @@ class BandModel(UpdatableObject):
         else:
             raise NotImplementedError('yet to implement saving numerical values in different unit scales')
 
+        independent_vars['model_defining_params'] = {} # paams like number of z modes and k_ordering etc
+        
         # init the parent to assure that computable items can be computed and saved.
-        super().__init__(**independent_vars)
+        super().__init__(use_sympy_dict=True,**independent_vars)
         
         return      
 
@@ -139,7 +142,21 @@ class BandModel(UpdatableObject):
     @property
     def parameter_dict(self):
         return self.independent_vars['parameter_dict']
+    @parameter_dict.setter
+    def parameter_dict(self,value):
+        self.independent_vars['parameter_dict'] = value
+
+    @property
+    def constants(self):
+        return self.independent_vars['constants']
+    @constants.setter
+    def constants(self,value):
+        self.independent_vars['constants'] = value
+    
     #endregion
+    @property
+    def spatial_dim(self):
+        return self.independent_vars['spatial_dim']
     
     # region postprocessing and building  / casting    
     
@@ -193,7 +210,7 @@ class BandModel(UpdatableObject):
         return True
         
     
-    def __postprocessing_constructor__(self,post_processing_spec,skip_bdg=False):
+    def __postprocessing_constructor__(self,array_pp_spec,skip_bdg=False):
         """Function for building the post-processing function, either with or without a bdg step. This allows us to also use it  for post-processing the SC order parameter.
 
         :param skip_bdg: Whether to not do the BdG extension part if it is supplied, defaults to False
@@ -202,39 +219,44 @@ class BandModel(UpdatableObject):
         :rtype: Sympy.Array
         """
         
-        _ = post_processing_spec    # this just calls the dependency so that dependencies work even if the pp_func_spec is an empty dict 
+        _ = array_pp_spec    # this just calls the dependency so that dependencies work even if the pp_func_spec is an empty dict 
         # create list of functions in the correct ordering
-        post_processing_func_list = []
+        array_pp_sorted = []
         for func_name in self.__class__.__post_processor_ordering__:
             if func_name == 'OTHER':
                 # run all keys that are not in ordering
-                post_processing_func_list.extend(f for name,f in post_processing_spec.items() if name not in self.__class__.__post_processor_ordering__)
+                array_pp_sorted.extend(f for name,f in array_pp_spec.items() if name not in self.__class__.__post_processor_ordering__)
+
             elif skip_bdg and func_name == "BdG":
                 continue # do not add bdg extension function. 
-            elif func_name in post_processing_spec.keys():
-                
-                post_processing_func_list.append(post_processing_spec[func_name])
-        if not len(post_processing_func_list):
-            post_processing_func = lambda x,model:x
+            else:
+                if func_name in array_pp_spec.keys():
+                    array_pp_sorted.append(array_pp_spec[func_name])
+        
+        # we need a function that post-processed the functions and the array simultaneously
+        
+        
+        
+        if not len(array_pp_sorted):
+            post_processing_func = lambda arr,funcs,model:(arr,funcs)
         else:
-            from functools import reduce
             def chain(funcs):
                 """
                 The function "chain" takes in multiple functions as arguments and returns a new function
                 that applies each of the input functions in sequence to its input.
                 """
-                def chained_call(arg,model):
-                    result = arg
+                def chained_call(arr,func_dict,model):
+                    result=(arr,func_dict)
                     for func in funcs:
-                        result=func(result,model=model)
+                        result=func(*result,model=model)
                     return result
                 return chained_call
-            post_processing_func = chain(post_processing_func_list)
+            post_processing_func = chain(array_pp_sorted)
         
         return post_processing_func
     
     @auto_update
-    def array_post_processor(self):
+    def post_processor(self):
         """Returns a function F(array,model) which converts the preprocessed array to the post-processed one based on parameters of the passed model 
 
         :return: _description_
@@ -242,6 +264,9 @@ class BandModel(UpdatableObject):
         """
         return self.__postprocessing_constructor__(self.independent_vars['postprocessing_function_specification'],skip_bdg=False)
 
+    @auto_update
+    def __post_process__(self):
+        return self.post_processor()(self.independent_vars['preprocessed_array'],self.independent_vars['function_dict'],self)
     
     @auto_update
     def post_processed_array(self):
@@ -257,17 +282,11 @@ class BandModel(UpdatableObject):
         :return: the post-processed expression array. If the post-processed expression has already been
         computed and the force_recompute flag is False, then it returns the precomputed version.
         """
-        return self.array_post_processor()(self.independent_vars['preprocessed_array'],self)
-        
-    
-    @auto_update
-    def function_post_processor(self):
-        # functi is combination of functions that take functions dict and model and return new function dict
-        return self.__postprocessing_constructor__(self.independent_vars['function_postprocessing_spec'],self)
+        return self.__post_process__()[0]
     
     @auto_update
     def post_processed_functions(self):
-        return self.function_post_processor()(self.independent_vars['function_dict'],self)
+        return self.__post_process__()[1]
     
     
     @auto_update
@@ -313,9 +332,9 @@ class BandModel(UpdatableObject):
         var_dict.update({k:k for k in self.momentum_symbols})  #casts momentum symbols as commutative from now on!
         var_dict.update({k:k for k in self.position_symbols})  #add position symbols as themselves (do it after function spec to avoid infinite recursion)
         # add function numerical functions to dict so that we can use lambdify
-        var_dict.update({s:s for s,f in self.independent_vars['function_dict'].items() if isinstance(f,NumericalFunction)})
+        var_dict.update({s:s for s,f in self.post_processed_functions().items() if isinstance(f,NumericalFunction)})
         
-        if any(True for f in self.independent_vars['function_dict'].values() if not isinstance(f,(NumericalFunction,SymbolicFunction,type(None)) )):
+        if any(True for f in self.independent_vars['function_dict'].values() if not isinstance(f,(NumericalFunction,SymbolicFunction,type(None),PlaceHolderFunction) )):
             wrong_dict =  {s:f for s,f in self.independent_vars['function_dict'].items() if not isinstance(f,(NumericalFunction,SymbolicFunction))}
             raise TypeError(f'functions must be passed as either numerical function or symbolic functions. Recieved: {wrong_dict}')
 
@@ -540,10 +559,10 @@ class BandModel(UpdatableObject):
         """
         from . import _m_e
         if material_name == 'Ge':
-            parameter_dict = {r'Delta_{0}': 0.296,
-                            r'gamma_{1}': 13.38,
-                            r'gamma_{2}': 4.24,
-                            r'gamma_{3}': 5.69,
+            parameter_dict = {r'\Delta_{0}': 0.296,
+                            r'\gamma_{1}': 13.38,
+                            r'\gamma_{2}': 4.24,
+                            r'\gamma_{3}': 5.69,
                             r'kappa': 3.41,
                             r'q': 0.06,
                             r'D_{u}': 3.3195,
@@ -552,7 +571,7 @@ class BandModel(UpdatableObject):
                             r'c_{12}': 4.13,
                             r'c_{44}': 6.83,
                             r'a': 5.65791,
-                            r'epsilon': 16.5,
+                            r'\epsilon': 16.5,
                             r'm': _m_e}
         else:
             raise ValueError(f'material name {material_name} not in database')
@@ -621,168 +640,37 @@ class BandModel(UpdatableObject):
             if not isinstance(self.independent_vars['function_dict'][a],funcs.Function):
                 f = self.independent_vars['function_dict'][a] 
                 if f is None:
-                    continue
-                
-                self.independent_vars['function_dict'][a] = NumericalFunction(f,a,[0,1,2]) if isinstance(f,Callable) else SymbolicFunction(sympy.sympify(f),a)
-                
-        
-        
-        def vector_potential_adder(array,model):
-            """Adds a vector potential to the model by replacing k_i with k_i +eA/hbar where e is the charge defined in the model
-            :param array: array to replace k symbols with
-            :type array: sympy.Array
-            :param model: model whose parameters to use
-            :type model: BandModel
-            """
-            K = model.momentum_symbols
-            from . import constants
-            A= list(sympy.symbols(__VECTOR_FIELD_NAMES__,commutative=False))
-            substituted_array = array.subs({K[i]:(K[i]+sympy.symbols('q_{c}')*A[i]/constants['hbar']) for i in range(3)})
-            return substituted_array
-
-        self.independent_vars['postprocessing_function_specification']['A-field'] = vector_potential_adder
-        
-        
-        def magnetic_field_curl_of_A(func_dict,model):
-        
-            A=sympy.symbols(__VECTOR_FIELD_NAMES__,commutative=False) 
-            B=sympy.symbols(__MAGNETIC_FIELD_NAMES__,commutative=False)
-            new_dict = func_dict.copy()
-            
-            
-            for b in B:
-                if func_dict.get(b,None) is not None:
-                    raise ValueError(f'Bot magnetic field and vector potential were specified for the model. When vector potentials are included in the model, the magnetic field is computed automatically')
-
-        # substitue B for curl of A  
-            for i in range(3):
-                j = (i+1)%3
-                k = (i+2)%3
-                
-                def numerical_B_factory(ai,aj):
-                    def B_func(x,y=None,z=None):
-                        return ai(x,y,z)-aj(x,y,z)
-                    return B_func   
-                
-                akj = func_dict[A[k]].derivative(j)
-                ajk =func_dict[A[j]].derivative(k)
-                
-                if any(isinstance(a,NumericalFunction) for a in (A[j],A[k])):
-                    spatial_deps = [i for i in range(3) if i in akj.spatial_dependencies+ajk.spatial_dependencies]
-                    b_function = NumericalFunction(numerical_B_factory(akj,ajk),B[i],spatial_deps)
+                    self.independent_vars['function_dict'][a] = PlaceHolderFunction(a)
                 else:
-                    b_function = SymbolicFunction(akj.expression-ajk.expression,B[i])
-                    
-                    
-                new_dict[B[i]]= b_function #func_dict[A[k]].derivative(j) -func_dict[A[j]].derivative(k)
+                    self.independent_vars['function_dict'][a] = NumericalFunction(f,a,[0,1,2]) if isinstance(f,Callable) else SymbolicFunction(sympy.sympify(f),a)
                 
-            return new_dict
 
-        
             
-        self.independent_vars['function_postprocessing_spec']['A-field'] = magnetic_field_curl_of_A
+        self.independent_vars['postprocessing_function_specification']['A-field'] = self.vector_potential_adder
         
         return self
 
+    def fix_k_arrangement(self,signature_type:str,signature_reduction_direction:str='left'):
+
+        # given an array arrange them and update the new functions that come out of this.
+        # determine the updated functions 
+        consts = self.independent_vars['model_defining_params']
+        consts['k_signature_type'] = signature_type
+        consts['k_signature_reduction'] = signature_reduction_direction
         
+
+        self.independent_vars['postprocessing_function_specification']['K-ordering'] = self.rearrange_ks
+        return self
         
-    # region BdG methods
     def BdG_extension(self):
         """Performs the BdG extension to also include time-reversed states in the Hamiltonian. This allows modeling of superconductivity.
         """
         # add a postprocessing function to the post-processor
-        
-        def BdG_extension(array:sympy.tensor.ImmutableDenseNDimArray,model:BandModel):
-            """given an array, H, returns H \\oplus H^* 
-            where H^* is the time-reversed state. This is computed by replacing:
-                B -> -B (magnetic field)
-                A -> -A (vector potential)
-                k -> -k (momentum)
-                all constants -> their complex conjugate
-            as well as performing a unitary transformation which depends on the model in question. (this is what ultimately describes the flipping of spin under time-reversal).
-            The time-reversal unitary transform is given as the attribute ´time_reversal_change_of_basis´
-            :param array: The array to extend
-            :type array: sympy.Array
-            :param model: The model from where the array it originates from. The parameter specification of this model will be used.
-            :type model: BandModel
-            """
-            
-            # complex conjugate everything and then convert the above named operators as k^* -> -k
-            
-            # the shape of the returned array. respects tensor structure.
-            return_shape = (array.shape[0]*2,)*2+array.shape[2:] 
-                
-            #change of basis array     
-            U = model.__time_reversal_change_of_basis__
-            if U is None:
-                raise NotImplementedError(f'time-reversal change of basis array has not been specified for the model: {self.__class__}')
-            
-            if len(return_shape) >2:
-                
-                
-                #we have to extend the change of basis matrix (which should only act on the first tensor components!) to act trivially on wrt the other indices.
-                if not U.shape == array.shape[:2]:
-                    raise ValueError(f'Time-reversal change of basis array has unexpected shape. expected: {array.shape[:2]} but got: {U.shape} ')
-                
-                U = sympy.tensorproduct(U,*(sympy.Array(sympy.eye(d)) for d in array.shape[2::2]))  # U can now be reshaped just like the array!
-                
-                
-                
-                # cast as matrix
-                matrix_size = np.product(array.shape[::2])
-                
-                # permute the dims such that the left-most indices are the bra indices and the right-most are the ket indices
-                dim_permutation=tuple(range(0,len(array.shape),2))+tuple(range(1,len(array.shape),2))
-                array = sympy.tensor.array.permutedims(array,dim_permutation) # type: ignore
-                array = array.reshape(matrix_size,matrix_size)
-                
-                U = sympy.tensor.array.permutedims(U,dim_permutation)
-                U = U.reshape(matrix_size,matrix_size) #type: ignore
-                
-                
-            else:
-                dim_permutation = [] # not needed for matrix shaped stuff i.e. in case there has been no z-confinement
-                
-                
-            
-            time_reversed_array = array.copy().conjugate().subs({k:-1*sympy.conjugate(k) for k in model.momentum_symbols+sympy.symbols(__MAGNETIC_FIELD_NAMES__+__VECTOR_FIELD_NAMES__)}) #type: ignore # momentum symbols separate because they are non-commuting
-            time_reversed_array = sympy.tensorcontraction(sympy.tensorproduct(U,time_reversed_array,U.conjugate().transpose()),(1,2),(3,4)) #NB! this one may need another minus sign! H -> -\Theta H \Theta^{-1} = - U H^* U^\dagger 
-            
-            bdg_extended = sympy.Array(sympy.Matrix(sympy.matrices.expressions.blockmatrix.BlockDiagMatrix(sympy.Matrix(array),sympy.Matrix(time_reversed_array)))) # cast first as matrix to get a dense version in stead of a sparse one before casting to array
-            
-            if bdg_extended.shape != return_shape:
-                
-                
-                # reorder the axes again and reshape back to desired shape!
-                permuted_return_shape = [return_shape[p] for p in dim_permutation]
-                
-                
-                bdg_extended = sympy.tensor.array.permutedims(bdg_extended.reshape(*permuted_return_shape),dim_permutation)
-                
-            # Add SC order parameter
-            if model.independent_vars['SC_Delta'] is not None:
-                # us the same post processing func dict as the post processor for the model. This ensures consistency
-                post_processed_delta = model.__postprocessing_constructor__(self.independent_vars['postprocessing_function_specification'],skip_bdg=True)(model.independent_vars['SC_Delta'],model)
-                np_delta = np.array(post_processed_delta)
-                np_delta_adj = np.swapaxes(np.array(post_processed_delta.conjugate()),0,1)
-                np_version = np.array(bdg_extended)
-                upper_right_quadrant = (slice(0,U.shape[0]),slice(U.shape[0],2*U.shape[0]))
-                lower_left_quadrant = (slice(U.shape[0],2*U.shape[0]),slice(0,U.shape[0]))
 
-                np_version[upper_right_quadrant] = np_delta
-                np_version[lower_left_quadrant] = np_delta_adj
-                bdg_extended = sympy.Array(np_version)
-                
-            return bdg_extended
-        
-        self.independent_vars['postprocessing_function_specification']['BdG'] = BdG_extension
+        self.independent_vars['postprocessing_function_specification']['BdG'] = self.BdG_extender
 
-        # No alteration of the functions is performed since time-reversal dows not change position
         return self
     
-
-        
-    #endregion
     #endregion 
     
     # region z-confinement
@@ -803,145 +691,16 @@ class BandModel(UpdatableObject):
         else:
             raise NotImplementedError(f'{z_confinement_type} is not implemneted')
         
-        self.independent_vars['constants'][sympy.symbols(r'n_{z-modes}')] = nz_modes  #  should probably not be changed...
-        self.independent_vars['constants'][sympy.symbols(r'z_{confinement_type}')] = z_confinement_type # should probably also not be changed 
+        self.independent_vars['model_defining_params'][sympy.symbols(r'n_{z-modes}')] = nz_modes  #  should probably not be changed...
+        self.independent_vars['model_defining_params'][sympy.symbols(r'z_{confinement_type}')] = z_confinement_type # should probably also not be changed 
         
         
-        from sympy.polys.polytools import degree
         
-        def z_confinement_func(array,model):
-            """
-            Performs z_confinement remapping of the passed array based on the parameter dict in the specified model
-            """
-            
-            
-            z_confinement_type = model.independent_vars['constants'][sympy.symbols(r'z_{confinement_type}')]
-            if  z_confinement_type== 'box':
-                
-                
-                def k_z_func(order):
-                    def __k_mat__(order, L, n_modes):
-                        """
-                        compute matrix version of k operator for box modes
-                        :param order:
-                        :param L:
-                        :param n_modes:
-                        :return:
-                        """
-                        if order > 2:
-                            raise NotImplementedError(f'fix this. K operator for order > 2 is not well defined (not hermitian). Could be fixed by just projecting k onto the (finite Hilbert space) ')  # todo
-
-                        def k_mel(n, m):
-                            # matrix elements of the momentum operator p^order = (-i\\hbar \\del)^order
-                            # indexing with 0 so we add one here to
-                            n += 1
-                            m += 1
-                            if order % 2:
-                                # odd case
-                                with np.errstate(divide='ignore', invalid='ignore'):  # suppress divide by zero warnings
-                                    re = n * ((-1) ** (n + m) - 1) / (sympy.pi * (m ** 2 - n ** 2)) * (-1j * m * sympy.pi / L) ** order
-                                return np.where(n != m, re, 0)
-
-                            else:
-                                # even case
-                                return np.where(n == m, (n * sympy.pi / L) ** order, 0)
-
-                        def p_mat(order):  # assemble momentum matrix
-                            if order == 0:
-                                return np.eye(n_modes, dtype='complex')
-                            P = np.fromfunction(k_mel, (n_modes, n_modes))
-
-                            return sympy.Array(P)
-
-                        return p_mat(order)
-                            
-                    k_mat = __k_mat__(order,sympy.symbols('l_z'),model.independent_vars['constants'][sympy.symbols('n_{z-modes}')])
-                    return k_mat #__k_mat__(order,model.parameter_dict[sympy.symbols('l_z')],model.constants[sympy.symbols('n_{z-modes}')])
-
-                def z_func(order):
-                    from .functions import box_polynomial_matrix
-                    
-                    L = model.independent_vars['parameter_dict'][sympy.symbols('l_z')]
-                    nz = model.independen_vars['constants'][sympy.symbols(r'n_{z-modes}')]
-                    return box_polynomial_matrix(nz,L,order)
-            
-            elif z_confinement_type == 'well':
-                
-                
-                raise NotImplementedError()
-                def k_z_func(order):
-                    raise NotImplementedError()
-            else:
-                raise ValueError(f'confinement type {z_confinement_type} not recognized')
-        
-        
-            disassemble_dict = {} # dict containing tensors corresponding to the respective order in kz
-            
-            kz = model.momentum_symbols[-1]
-            z = model.position_symbols[-1] 
-            
-            # construct disassemble_dict (divide Hamiltonian into terms according to their dependency on kz and z)
-            nz_modes = model.independent_vars['constants'][sympy.symbols(r'n_{z-modes}')]
-            new_arr = sympy.tensor.Array.zeros(*array.shape,nz_modes,nz_modes).as_mutable() # check this works
-                        
-            for i,val in enumerate(np.array(array).ravel()):
-                
-                val = val.expand(mul=True) # expand any parentheses
-                terms = val.args if isinstance(val,sympy.core.add.Add) else (val,)
-                for term in terms: 
-                    search_symbols = tuple(f for f in term.free_symbols if f.name[-3:] == '(x)')
-                    term = expand_term(term,split_pow=False) # expand into factors 
-
-                    coeff = 1
-                    matrix = sympy.Matrix.eye(nz_modes) # check this works )
-                    for t in term:
-                        if not t.is_constant(kz):
-                            # compute the matrix_expression of kz and z and Vs
-                            matrix = matrix @ sympy.Matrix(k_z_func(t.args[1] if isinstance(t,sympy.Pow) else 1))
-                        elif not t.is_constant(z):
-                            matrix = matrix @ sympy.Matrix(z_func(t.args[1] if isinstance(t,sympy.Pow) else 1))
-                        elif len(search_symbols) and not t.is_constant(*search_symbols):
-                            projected = model.post_processed_functions()[t].project_to_basis([2],nz_modes,type=z_confinement_type,**eval_kwargs)[0]
-                            matrix = matrix @sympy.Matrix(projected)
-                        else:
-                            coeff = coeff*t
-                    # with the signature, we can replace kz and z in the correct order.
-
-                    index = np.unravel_index(i,array.shape)+(slice(0,matrix.shape[0]),slice(0,matrix.shape[1]))
-                    
-                    new_arr[index] += sympy.Array(coeff*matrix)
-            
-            
-            
-            return sympy.Array(new_arr)
-
-        self.independent_vars['postprocessing_function_specification']['z-confinement'] = z_confinement_func
-
-        def z_confinement_functions_processor(funcs,model):
-            """
-            The function `z_confinement_functions_processor` takes in a dictionary of functions and a
-            model, and returns a new dictionary that includes the functions projected onto a basis.
-            
-            :param funcs: The parameter "funcs" is a dictionary that contains functions as values. Each
-            function represents a mathematical function that you want to process
-            :param model: The "model" parameter is an object that represents a mathematical model or
-            system. It contains information about the variables, equations, and other properties
-            of the model.
-            :type model: BandModel
-            :return: a new dictionary that includes all the functions from the input dictionary `funcs`
-            and any new functions that are generated by projecting the existing functions onto a basis.
-            """
-            new_dict = funcs.copy()
-            # add all the new functions from projecting as well
-            for f in funcs.values():
-                if f is not None:
-                    new_dict.update(f.project_to_basis([2],[model.independent_vars['constants'][sympy.symbols(r'n_{z-modes}')]],z_confinement_type,**eval_kwargs)[1])
-            return new_dict
-        
-        self.independent_vars['function_postprocessing_spec']['z-confinement'] = z_confinement_functions_processor
+        self.independent_vars['model_defining_params']['z_confinement_eval_kwargs'] = eval_kwargs
+        self.independent_vars['postprocessing_function_specification']['z-confinement'] = self.z_confinement_func
         # For the functions that depend on z, we need to 
         
-        self.spatial_dim -=1
+        self.independent_vars['spatial_dim'] = 2 
         return self
         
 
@@ -958,14 +717,292 @@ class BandModel(UpdatableObject):
         
         # if the independent vars are equal the models are equal:
         return self.independent_vars.as_dict() == other.independent_vars.as_dict()
-        
-        
-    def __getstate__(self):
-        return self.__dict__
+    
+    
     def __setstate__(self,state):
-        self.__dict__.update(state)
+        self.__init__(state['preprocessed_array'],state['spatial_dim'],state['unit_convention'])
+
+        from .updatable_object import ConstantsDict
+        
+        self._independent_vars_ = ConstantsDict(state)
+        return self
     # endregion
 
+    
+    
+    # region post-processing functions
+    @staticmethod
+    def z_confinement_func(array,func_dict,model):
+        """
+        Performs z_confinement remapping of the passed array based on the parameter dict in the specified model
+        """
+        
+        
+        z_confinement_type = model.independent_vars['model_defining_params'][sympy.symbols(r'z_{confinement_type}')]
+        if  z_confinement_type== 'box':
+            
+            
+            def k_z_func(order):
+                def __k_mat__(order, L, n_modes):
+                    """
+                    compute matrix version of k operator for box modes
+                    :param order:
+                    :param L:
+                    :param n_modes:
+                    :return:
+                    """
+                    if order > 2:
+                        raise NotImplementedError(f'fix this. K operator for order > 2 is not well defined (not hermitian). Could be fixed by just projecting k onto the (finite Hilbert space) ')  # todo
+
+                    def k_mel(n, m):
+                        # matrix elements of the momentum operator p^order = (-i\\hbar \\del)^order
+                        # indexing with 0 so we add one here to
+                        n += 1
+                        m += 1
+                        if order % 2:
+                            # odd case
+                            with np.errstate(divide='ignore', invalid='ignore'):  # suppress divide by zero warnings
+                                re = n * ((-1) ** (n + m) - 1) / (sympy.pi * (m ** 2 - n ** 2)) * (-1j * m * sympy.pi / L) ** order
+                            return np.where(n != m, re, 0)
+
+                        else:
+                            # even case
+                            return np.where(n == m, (n * sympy.pi / L) ** order, 0)
+
+                    def p_mat(order):  # assemble momentum matrix
+                        if order == 0:
+                            return np.eye(n_modes, dtype='complex')
+                        P = np.fromfunction(k_mel, (n_modes, n_modes))
+
+                        return sympy.Array(P)
+
+                    return p_mat(order)
+                        
+                k_mat = __k_mat__(order,sympy.symbols('l_z'),model.independent_vars['model_defining_params'][sympy.symbols('n_{z-modes}')])
+                return k_mat #__k_mat__(order,model.parameter_dict[sympy.symbols('l_z')],model.constants[sympy.symbols('n_{z-modes}')])
+
+            def z_func(order):
+                from .functions import box_polynomial_matrix
+                
+                L = model.independent_vars['parameter_dict'][sympy.symbols('l_z')]
+                nz = model.independen_vars['model_defining_params'][sympy.symbols(r'n_{z-modes}')]
+                return box_polynomial_matrix(nz,L,order)
+        
+        elif z_confinement_type == 'well':
+            
+            
+            raise NotImplementedError()
+            def k_z_func(order):
+                raise NotImplementedError()
+        else:
+            raise ValueError(f'confinement type {z_confinement_type} not recognized')
+    
+    
+        
+        kz = model.momentum_symbols[-1]
+        z = model.position_symbols[-1] 
+        
+        
+        eval_kwargs = model.independent_vars['model_defining_params']['z_confinement_eval_kwargs']
+        
+        # construct disassemble_dict (divide Hamiltonian into terms according to their dependency on kz and z)
+        nz_modes = model.independent_vars['model_defining_params'][sympy.symbols(r'n_{z-modes}')]
+        new_arr = sympy.tensor.Array.zeros(*array.shape,nz_modes,nz_modes).as_mutable() # check this works
+        
+        new_funcs = func_dict.copy()
+                
+        for i,val in enumerate(np.array(array).ravel()):
+            
+            val = val.expand(mul=True) # expand any parentheses
+            terms = val.args if isinstance(val,sympy.core.add.Add) else (val,)
+            for term in terms: 
+                search_symbols = tuple(f for f in term.free_symbols if f.name[-3:] == '(x)')
+                term = expand_term(term,split_pow=False) # expand into factors 
+
+                coeff = 1
+                matrix = sympy.Matrix.eye(nz_modes) # check this works )
+                for t in term:
+                    if not t.is_constant(kz):
+                        # compute the matrix_expression of kz and z and Vs
+                        matrix = matrix @ sympy.Matrix(k_z_func(t.args[1] if isinstance(t,sympy.Pow) else 1))
+                    elif not t.is_constant(z):
+                        matrix = matrix @ sympy.Matrix(z_func(t.args[1] if isinstance(t,sympy.Pow) else 1))
+                    elif len(search_symbols) and not t.is_constant(*search_symbols):
+                        projected,added_funcs = new_funcs[t].project_to_basis(2,nz_modes,type=z_confinement_type,**eval_kwargs)
+                        new_funcs.update(added_funcs)
+                        matrix = matrix @sympy.Matrix(projected)
+                    else:
+                        coeff = coeff*t
+                # with the signature, we can replace kz and z in the correct order.
+
+                index = np.unravel_index(i,array.shape)+(slice(0,matrix.shape[0]),slice(0,matrix.shape[1]))
+                
+                new_arr[index] += sympy.Array(coeff*matrix)
+        
+        
+        
+        return sympy.Array(new_arr),new_funcs
+
+    @staticmethod
+    def BdG_extender(array:sympy.tensor.ImmutableDenseNDimArray,func_dict,model):
+        """given an array, H, returns H \\oplus H^* 
+        where H^* is the time-reversed state. This is computed by replacing:
+            B -> -B (magnetic field)
+            A -> -A (vector potential)
+            k -> -k (momentum)
+            all constants -> their complex conjugate
+        as well as performing a unitary transformation which depends on the model in question. (this is what ultimately describes the flipping of spin under time-reversal).
+        The time-reversal unitary transform is given as the attribute ´time_reversal_change_of_basis´
+        :param array: The array to extend
+        :type array: sympy.Array
+        :param model: The model from where the array it originates from. The parameter specification of this model will be used.
+        :type model: BandModel
+        """
+        
+        # complex conjugate everything and then convert the above named operators as k^* -> -k
+        
+        # the shape of the returned array. respects tensor structure.
+        return_shape = (array.shape[0]*2,)*2+array.shape[2:] 
+            
+        #change of basis array     
+        U = model.__time_reversal_change_of_basis__
+        if U is None:
+            raise NotImplementedError(f'time-reversal change of basis array has not been specified for the model: {self.__class__}')
+        
+        if len(return_shape) >2:
+            
+            
+            #we have to extend the change of basis matrix (which should only act on the first tensor components!) to act trivially on wrt the other indices.
+            if not U.shape == array.shape[:2]:
+                raise ValueError(f'Time-reversal change of basis array has unexpected shape. expected: {array.shape[:2]} but got: {U.shape} ')
+            
+            U = sympy.tensorproduct(U,*(sympy.Array(sympy.eye(d)) for d in array.shape[2::2]))  # U can now be reshaped just like the array!
+            
+            
+            
+            # cast as matrix
+            matrix_size = np.product(array.shape[::2])
+            
+            # permute the dims such that the left-most indices are the bra indices and the right-most are the ket indices
+            dim_permutation=tuple(range(0,len(array.shape),2))+tuple(range(1,len(array.shape),2))
+            array = sympy.tensor.array.permutedims(array,dim_permutation) # type: ignore
+            array = array.reshape(matrix_size,matrix_size)
+            
+            U = sympy.tensor.array.permutedims(U,dim_permutation)
+            U = U.reshape(matrix_size,matrix_size) #type: ignore
+            
+            
+        else:
+            dim_permutation = [] # not needed for matrix shaped stuff i.e. in case there has been no z-confinement
+            
+            
+        
+        time_reversed_array = array.copy().conjugate().subs({k:-1*sympy.conjugate(k) for k in model.momentum_symbols+sympy.symbols(__MAGNETIC_FIELD_NAMES__+__VECTOR_FIELD_NAMES__)}) #type: ignore # momentum symbols separate because they are non-commuting
+        time_reversed_array = sympy.tensorcontraction(sympy.tensorproduct(U,time_reversed_array,U.conjugate().transpose()),(1,2),(3,4)) #NB! this one may need another minus sign! H -> -\Theta H \Theta^{-1} = - U H^* U^\dagger 
+        
+        bdg_extended = sympy.Array(sympy.Matrix(sympy.matrices.expressions.blockmatrix.BlockDiagMatrix(sympy.Matrix(array),sympy.Matrix(time_reversed_array)))) # cast first as matrix to get a dense version in stead of a sparse one before casting to array
+        
+        if bdg_extended.shape != return_shape:
+            
+            
+            # reorder the axes again and reshape back to desired shape!
+            permuted_return_shape = [return_shape[p] for p in dim_permutation]
+            
+            
+            bdg_extended = sympy.tensor.array.permutedims(bdg_extended.reshape(*permuted_return_shape),dim_permutation)
+            
+        # Add SC order parameter
+        if model.independent_vars['SC_Delta'] is not None:
+            # us the same post processing func dict as the post processor for the model. This ensures consistency
+            post_processed_delta = model.__postprocessing_constructor__(model.independent_vars['postprocessing_function_specification'],skip_bdg=True)(model.independent_vars['SC_Delta'],model.independent_vars['function_dict'],model)[0]
+            np_delta = np.array(post_processed_delta)
+            np_delta_adj = np.swapaxes(np.array(post_processed_delta.conjugate()),0,1)
+            np_version = np.array(bdg_extended)
+            upper_right_quadrant = (slice(0,U.shape[0]),slice(U.shape[0],2*U.shape[0]))
+            lower_left_quadrant = (slice(U.shape[0],2*U.shape[0]),slice(0,U.shape[0]))
+
+            np_version[upper_right_quadrant] = np_delta
+            np_version[lower_left_quadrant] = np_delta_adj
+            bdg_extended = sympy.Array(np_version)
+            
+        return bdg_extended,func_dict
+    
+    @staticmethod
+    def vector_potential_adder(array,func_dict,model):
+        """Adds a vector potential to the model by replacing k_i with k_i +eA/hbar where e is the charge defined in the model
+        :param array: array to replace k symbols with
+        :type array: sympy.Array
+        :param model: model whose parameters to use
+        :type model: BandModel
+        """
+        K = model.momentum_symbols
+        from . import constants
+        A= list(sympy.symbols(__VECTOR_FIELD_NAMES__,commutative=False))
+        substituted_array = array.subs({K[i]:(K[i]+sympy.symbols('q_{c}')*A[i]/constants['hbar']) for i in range(3)})
+
+    
+        # region add B-field from A 
+        A=sympy.symbols(__VECTOR_FIELD_NAMES__,commutative=False) 
+        B=sympy.symbols(__MAGNETIC_FIELD_NAMES__,commutative=False)
+        new_dict = func_dict.copy()
+        
+        
+        for b in B:
+            # check that B field wsa not supplied
+            if func_dict.get(b,None) is not None and not isinstance(func_dict.get(b,None),PlaceHolderFunction):
+                raise ValueError(f'Bot magnetic field and vector potential were specified for the model. When vector potentials are included in the model, the magnetic field is computed automatically')
+
+        # substitue B for curl of A  
+        for i in range(3):
+            j = (i+1)%3
+            k = (i+2)%3
+            
+            def numerical_B_factory(ai,aj):
+                def B_func(x,y=None,z=None):
+                    return ai(x,y,z)-aj(x,y,z)
+                return B_func   
+            
+            akj = func_dict[A[k]].derivative(j)
+            ajk =func_dict[A[j]].derivative(k)
+            
+            if any(isinstance(a,NumericalFunction) for a in (A[j],A[k])):
+                spatial_deps = [i for i in range(3) if i in akj.spatial_dependencies+ajk.spatial_dependencies]
+                b_function = NumericalFunction(numerical_B_factory(akj,ajk),B[i],spatial_deps)
+            else:
+                b_function = SymbolicFunction(akj.expression-ajk.expression,B[i])
+                
+                
+            new_dict[B[i]]= b_function #func_dict[A[k]].derivative(j) -func_dict[A[j]].derivative(k)
+
+        # endregion
+        
+        return substituted_array,new_dict
+    
+    @staticmethod 
+    def rearrange_ks(array,func_dict,model):
+        consts = model.independent_vars['model_defining_params']
+        from .symbolic import arange_ks_array
+        new_array = arange_ks_array(array,consts['k_signature_type'],consts['k_signature_reduction'])
+        
+
+        # region functions computing
+        from .symbolic import arange_ks_array
+        from .functions import decompose_func_name
+        
+        for s in new_array.free_symbols:
+            if s.name[-3:]=='(x)' and s not in func_dict:
+                # try to make s. we know that the symbols have been projected the same way so only derivatives can differ
+                s_decomp = decompose_func_name(s.name)
+                for f,v in func_dict.items():
+                    f_decomp = decompose_func_name(f.name)
+                    if s_decomp[0] == f_decomp[0] and s_decomp[2] == f_decomp[2]:
+                        func_dict[s] = v.determine_derived_function(s.name)
+                        break
+                else:
+                    raise ValueError(f'function {s} could not be established')
+        # endregion
+        return new_array,func_dict 
+    #endregion
 class FreeBoson(BandModel):
     __time_reversal_change_of_basis__ = sympy.Array([[1]]) # no spin so no change of basis!
     
@@ -1035,7 +1072,10 @@ class FreeFermion(BandModel):
             for b in __MAGNETIC_FIELD_NAMES__: 
                 if not isinstance(self.independent_vars['function_dict'][sympy.symbols(b,commutative=False)],funcs.Function):
                     f = self.independent_vars['function_dict'][sympy.symbols(b,commutative=False)] 
-                    self.independent_vars['function_dict'][sympy.symbols(b,commutative=False)] = NumericalFunction(f,sympy.symbols(b,commutative=False),[0,1,2]) if isinstance(f,Callable) else SymbolicFunction(sympy.sympify(f),sympy.symbols(b,commutative=False))
+                    if f is None:
+                        self.independent_vars['function_dict'][sympy.symbols(b,commutative=False)] = PlaceHolderFunction(b)
+                    else:
+                        self.independent_vars['function_dict'][sympy.symbols(b,commutative=False)] = NumericalFunction(f,sympy.symbols(b,commutative=False),[0,1,2]) if isinstance(f,Callable) else SymbolicFunction(sympy.sympify(f),sympy.symbols(b,commutative=False))
                     
         
         
@@ -1069,7 +1109,7 @@ class FreeFermion(BandModel):
 
 class LuttingerKohnHamiltonian(BandModel):
     __time_reversal_change_of_basis__ = sympy.Array([[0,0,0,-1],[0,0,1,0],[0,-1,0,0],[1,0,0,0]])
-    
+    __post_processor_ordering__ = ('crystal rotation',) + BandModel.__post_processor_ordering__ # crystal rotation is the first thing that happends
     
     @staticmethod
     def __make_LK_Hamiltonian__(theta:float|sympy.Symbol|None=None,phi:float|sympy.Symbol|None=None):
@@ -1115,11 +1155,11 @@ class LuttingerKohnHamiltonian(BandModel):
             
             
         ss = lambda n:sympy.symbols(n)
-        H_LK = ss(r'gamma_{1}')* (K[0]**2+ K[1]**2+ K[2]**2)*Id
+        H_LK = ss(r'\gamma_{1}')* (K[0]**2+ K[1]**2+ K[2]**2)*Id
         for i in range(3):
             j = (i+1)%3
             k = (i+2)%3
-            H_LK = H_LK - ss(r'gamma_{3}')*((J[j] @ J[k]+J[k]@J[j])*(K[j]*K[k]+K[k]*K[j])) - 2*ss(r'gamma_{2}')*(J2[i]-Jsq/3)*K[i]**2
+            H_LK = H_LK - ss(r'\gamma_{3}')*((J[j] @ J[k]+J[k]@J[j])*(K[j]*K[k]+K[k]*K[j])) - 2*ss(r'\gamma_{2}')*(J2[i]-Jsq/3)*K[i]**2
         
         from . import constants
         hbar =  constants['hbar']
@@ -1140,13 +1180,14 @@ class LuttingerKohnHamiltonian(BandModel):
         super().__init__(H_LK,spatial_dim,unit_convention)
         
         ss = lambda n:sympy.symbols(n)
-        self.independent_vars['parameter_dict'].update({ss(r'gamma_{1}'):gamma1, ss(r'gamma_{2}'):gamma2,ss(r'gamma_{3}'):gamma3,ss('m'):mass})
+        self.independent_vars['parameter_dict'].update({ss(r'\gamma_{1}'):gamma1, ss(r'\gamma_{2}'):gamma2,ss(r'\gamma_{3}'):gamma3,ss('m'):mass})
 
     def rotate_crystallographic_direction(self,theta=None,phi=None):
         """Performs a the postprocessing step of rotating the coordinate system, such that the coordinates are not aligned with the crystallographic axis. 
         Under the hood, the regular kinteic part of the Luttinger Kohn Hamiltonian is subtracted and another version, with rotated Ks and  Js is added.
         We have chosen to do so to make the expressions simpler if the crystal is not rotated (which is the most common scenario)
-
+        It is important that this prosprocessing step occurs beofre anything that alters the LK hamiltonian!
+        
         :param theta: The angle between the crystallographic z-direction and the coordinate z axis
         :type theta: float|sympy.Symbol
         :param phi: The angle between the crystallographic y-direction and the coordinate y axis
@@ -1158,24 +1199,12 @@ class LuttingerKohnHamiltonian(BandModel):
         self.independent_vars['parameter_dict'][theta] =theta_val
         self.independent_vars['parameter_dict'][phi] =phi_val
         
-        
-        
-        def rotate_crystal(array,model):
-            """
-            Rotates the crystal
-            :param array: Array to transform.
-            :type array: sympy.Array
-            :param model: uses the parameters and constants of this model
-            :type model: BandModel
-            """
-            
-            rotated_H_LK = model.__make_LK_Hamiltonian__(theta,phi)
-            regular_H_LK = model.__make_LK_Hamiltonian__()
-            array = array - regular_H_LK + rotated_H_LK
-            return array
-            
-        self.independent_vars['postprocessing_function_specification']['crystal rotation'] = rotate_crystal
+        self.independent_vars['postprocessing_function_specification']['crystal rotation'] = self.rotate_crystal
         return self
+
+        
+        
+
     def add_zeeman_term(self,kappa:float|None=None,q:float|None=None,B:list|None=None):
         """Adds a Zeeman term to the Model. The B-field can either be passed here, or it can be inferred from an added vector field.
 
@@ -1202,8 +1231,10 @@ class LuttingerKohnHamiltonian(BandModel):
         Bfuncs = []
         for i,b in enumerate((Bx,By,Bz)):
             
-            if b is not None and not isinstance(b,Function):
-                if isinstance(b,Callable):
+            if not isinstance(b,Function):
+                if b is None:
+                    Bfuncs.append(PlaceHolderFunction(Bsym[i]))
+                elif isinstance(b,Callable):
                     Bfuncs.append(NumericalFunction(b,Bsym[i],None))
                 else:
                     Bfuncs.append(SymbolicFunction(b,Bsym[i]))
@@ -1236,7 +1267,30 @@ class LuttingerKohnHamiltonian(BandModel):
         self.independent_vars['preprocessed_array'] = self.independent_vars['preprocessed_array']+ Zeeman_term 
         
         return self
+    
+    #region post-processing_functions
+    @staticmethod
+    def rotate_crystal(array,funcs,model):
+        """
+        Rotates the crystal
+        :param array: Array to transform.
+        :type array: sympy.Array
+        :param model: uses the parameters and constants of this model
+        :type model: BandModel
+        """
         
+        theta,phi = sympy.symbols(r'\theta,\phi')
+        rotated_H_LK = model.__make_LK_Hamiltonian__(theta,phi) # add rotation verison with symbolic angles!
+        regular_H_LK = model.__make_LK_Hamiltonian__()
+        array = array - regular_H_LK + rotated_H_LK
+        return array,funcs
+    
+    #endregion       
+
+
+
+
+
 # region vector-field functions:
 def make_vector_field(B_field,position_symbols,gauge='symmetric'):
     """
@@ -1268,3 +1322,5 @@ def make_vector_field(B_field,position_symbols,gauge='symmetric'):
     return A 
 
 #endregion
+
+

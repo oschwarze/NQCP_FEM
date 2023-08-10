@@ -93,7 +93,6 @@ class TestFEniCsModel(unittest.TestCase):
         facit_list = np.sort(facit_list)
         np.testing.assert_allclose(np.sort(N_found),facit_list[:N],atol=5.2e-1,rtol=1e-2)
         
-        
         import sympy
         self.box_model.band_model.parameter_dict[sympy.symbols('omega')] = 0
         A_box = self.box_model.assemble_array()

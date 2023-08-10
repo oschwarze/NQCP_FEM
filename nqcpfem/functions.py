@@ -1,4 +1,4 @@
-from typing import Callable,Sequence,Iterable
+from typing import Callable,Sequence,Iterable,Tuple
 import sympy
 from .symbolic import __POSITION_NAMES__,derivative_of_function,sort_out_polynomials,extract_valid_bipartition_part,symbolize_array
 import logging
@@ -8,20 +8,22 @@ LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
 from abc import ABC,abstractmethod
 
+
 # NB! These symbols are commuting since we are not dealing wiht k-operators at all, and sympy.Piecewise does not work with non-commuting symbols
 X,Y,Z = sympy.symbols(__POSITION_NAMES__)
 class Function(ABC):
     """A class representing a function. This function specifies the available methods for working with functions.
     """
-    def __init__(self,symbol,spatial_dependencies,is_constant=False):
+    def __init__(self,symbol,spatial_dependencies,is_constant=False,**kwargs):
         self.spatial_dependencies = spatial_dependencies # array of ints representing the spatial dependencies
         self.is_constant = is_constant
-        
+        self.projection_spec = kwargs.get('projection_spec',None) # spec how function was projected if it is a projected function
         if isinstance(symbol,str):
             symbol = sympy.Symbol(symbol,commutative=False)
         else:
-            if not symbol.is_commutative: 
+            if symbol.is_commutative or symbol.name[-3:] != '(x)': 
                 raise ValueError(f'function symbols should end with (x) and be non-commutative')
+            
         self.symbol = symbol # the symbol representing the function. Must end on (x)
         self._derivatives_ = {}
         super(Function,self).__init__()
@@ -65,8 +67,19 @@ class Function(ABC):
         """
         raise NotImplementedError()
     
+    @staticmethod
+    def __projection_arg_preprocess__(directions,n_modes):
+        # sort the arguments
+        if isinstance(directions,int):
+            directions = [directions]
+        sorted_i = np.argsort(directions)
+        if isinstance(n_modes,int):
+            n_modes = [n_modes]
+        n_modes = [n_modes[i] for i in sorted_i]
+        return directions,n_modes
+    
     @abstractmethod
-    def project_to_basis(directions,n_modes,type='box',**kwargs):
+    def project_to_basis(self,directions,n_modes,type='box',**kwargs):
         """ # computes the matrix elements <n|F|m> for the function F (self) and some basis states |n>, |m> which are classified by `type`
 
 
@@ -82,18 +95,58 @@ class Function(ABC):
         """
         #This the return value should only have to be computed once so use the auto_update feature! this also ensures that we get the same Function instances every time.
         # The return value must be an array contianing floats and symbols representing new functions: `(`symbol_name`)_{nm}(x)`  as well as a dict of the corresponding functions (keys are the symbols)
-        
         raise NotImplementedError()
     
+    def determine_derived_function(self,other_function_name):
+        
+        
+        my_name,my_derivs,my_proj = decompose_func_name(self.symbol.name)
+        
+        other_name,other_derivs,other_proj = decompose_func_name(other_function_name)
+        if my_name != other_name:
+            raise ValueError(f'unable to determine funcitonal expression of {other_function_name} from {self.symbol.name} (wrong base function)')
+
+        # assert projections are OK
+        if my_proj is not None:
+            if my_proj != other_proj:
+                raise ValueError(f'unable to determine funcitonal expression of {other_function_name} from {self.symbol.name} (wrong projection component)')
+        elif other_proj is not None:
+            # determine which projection we want
+            raise NotImplemnetedError(' TODO FIx this. It should be the responsibility of the band_model to commute Ks!')
+            #new_projection = other_proj
+
+        if other_derivs is None:
+                other_derivs = tuple()
+        if my_derivs is not None:
+            new_derivs = [other_derivs.count(i) - my_derivs.count(i) for i in range(3)]
+            if any(n < 0 for n in new_derivs):
+                raise ValueError(f'unable to determine funcitonal expression of {other_function_name} from {self.symbol.name} (wrong non-compatible derivatives)')
+        else:
+            new_derivs = other_derivs
+            
+        # take new derivatives of the function:
+        new_func = self
+        for n in new_derivs:
+            new_func = new_func.derivative(n)
+        
+        return new_func
+                    
+                
+    def __hash__(self):
+        return self.symbol.__hash__() # one-to-one correspondence between function and symbol!    
+        
+        
+        
+    
 class SymbolicFunction(Function):
-    def __init__(self,expression,symbol):
+    def __init__(self,expression,symbol,**kwargs):
         expression = sympy.sympify(expression)
         if isinstance(symbol,str):
             symbol = sympy.Symbol(symbol,commutative=False)
         if symbol.name[-3:] != '(x)':
             raise ValueError(f'symbol representing functio MUST end with `(x)`. Recieved {symbol} with name: {symbol.name}')
         spatial_dependencies = [i for i in range(3) if not expression.is_constant((X,Y,Z)[i])]
-        Function.__init__(self,symbol,spatial_dependencies,bool(len(spatial_dependencies)))
+        Function.__init__(self,symbol,spatial_dependencies,bool(len(spatial_dependencies)),**kwargs)
         self._expression_ = expression
     
     @property
@@ -111,7 +164,8 @@ class SymbolicFunction(Function):
         
         return SymbolicFunction(res,name)
     
-    def project_to_basis(self,directions, n_modes, type='box',**kwargs):
+    @lru_cache(32)
+    def project_to_basis(self,directions:int|Tuple[int], n_modes:int|Tuple[int], type='box',**kwargs):
         """ 
         Structure of expressions: 
         IF the expression is a piecewise function, it will be instance of Piecewise.
@@ -123,14 +177,8 @@ class SymbolicFunction(Function):
         
         
         # check that the expression is One of the analytically solved types. else we have to compute it numerically
-        
-        # sort the arguments
-        if isinstance(directions,int):
-            directions = [directions]
-        sorted_i = np.argsort(directions)
-        if isinstance(n_modes,int):
-            n_modes = [n_modes]
-        n_modes = [n_modes[i] for i in sorted_i]
+        directions,n_modes = self.__projection_arg_preprocess__(directions,n_modes)
+
         if all(d not in self.spatial_dependencies for d in directions):
             # just return identity array
             return self.symbol*sympy.tensor.tensorproduct(*(sympy.Array(sympy.Matrix.eye(n)) for n in n_modes)) , {self.symbol:self}
@@ -234,7 +282,13 @@ class SymbolicFunction(Function):
             else:
                 matrix_elements.append(t)
         """
-        return symbolize_array(sympy.Array(matrix_form),self.symbol)
+        symbolic_array,funcs = symbolize_array(sympy.Array(matrix_form),self.symbol)
+        projection_spec = {'directions':directions,
+                          'n_modes': n_modes,
+                          'type':type,
+                          '__kwargs__':kwargs}
+        func = {f:SymbolicFunction(v,f,projection_spec=projection_spec) for f,v in funcs.items()}
+        return symbolic_array,func
 
     def __getstate__(self):
         return {'expr':self.expression,'symbol': self.symbol}
@@ -247,6 +301,9 @@ class SymbolicFunction(Function):
             return False
         return self.expression == __value.expression
 
+    def __hash__(self):
+        return super().__hash__()
+    
 # region Analytically computed Matrices
 
 # region box system
@@ -501,5 +558,142 @@ class NumericalFunction(Function):
         return super().__compute_derivative__(name, directions)
     
     def project_to_basis(self,directions, n_modes, type='box', **kwargs):
+        directions,n_modes = self.__projection_arg_preprocess__(directions,n_modes)
         raise NotImplementedError(f'TODO:  numerial projection')
         return super().project_to_basis(n_modes, type, **kwargs)
+    
+    
+class PlaceHolderFunction(NumericalFunction):
+    
+    def __init__(self,symbol,spatial_dependencies=None,is_constant=False):
+        # is instance of numerical function to tell that we do not know anythong about how the functions looks
+        if spatial_dependencies is None:
+            spatial_dependencies = [] if is_constant else [1,2,3]
+
+        super(PlaceHolderFunction,self).__init__(None,symbol,spatial_dependencies,is_constant)
+        
+    def __call__(self,x,y=None,z=None):
+        raise NotImplementedError(f'funciton {self.symbol} was not specified so it is not possible to call it')
+    
+    def __compute_derivative__(self, name, directions):
+        
+        new_func = PlaceHolderFunction(name,self.spatial_dependencies,is_constant=self.is_constant)
+        return new_func
+    
+    def project_to_basis(self,directions, n_modes, type='box', **kwargs):
+
+        
+        directions,n_modes = self.__projection_arg_preprocess__(directions,n_modes)
+        # return full array of new PlaceHolderFunctions
+        import re
+        def new_name(old_name,i,j):
+            # assuming that the name is of the form: (BASE_NMAE)_{abcdefg}(x) or BASE_NAME(x)
+            name = re.search(r'\((.*)\)_\{([^\(\)]*)\}\(x\)',old_name)
+            if name is None: # no existing sufix
+                base_name = old_name[:-3] # drop (x)
+                suffix = f'{i}{j}'
+            else:
+                base_name = name.group(1)
+                old_suffix = name.group(2)
+                suffix = old_suffix+f'{i}{j}'
+            
+            updated_name = '('+base_name+')_{'+suffix+'}(x)'
+            return updated_name
+        
+        name_list = [(tuple(),self.symbol.name)]
+        
+        for n in n_modes:
+            new_name_list = [(index+(i,j),new_name(name,i,j)) for index,name in name_list for i in range(n) for j in range(n)]
+            
+            name_list = new_name_list
+        
+        
+        
+        new_spatial_dep = [s for s in self.spatial_dependencies if s not in directions]
+        # convert list of indices and names to functions and symbols:
+        func_dict = {sympy.Symbol(name,commutative=False): PlaceHolderFunction(sympy.Symbol(name,commutative=False),new_spatial_dep,self.is_constant) for _,name in name_list }
+        
+        array_shape = sum(([n]*2 for n in n_modes),[])
+        new_array = sympy.Array.zeros(*array_shape).as_mutable()
+        
+        for id,name in name_list:
+            new_array[id] = sympy.Symbol(name,commutative=False)
+        
+        return sympy.Array(new_array),func_dict
+
+
+
+def decompose_func_name(func_name):
+    # decompose into base_name projection stuff and derivatives
+    import re
+    
+    name = re.search(r'\((.*)\)_\{(.*)\}\(x\)',func_name)
+    if name is not None:
+        func_name = name.group(1)+'(x)'
+        # projection coords is tuple of ints
+        projection = tuple(int(s) for s in name.group(2))
+    else:
+        projection = None
+    
+    
+    # remove derivative syntax: FUNC_{ABC(xxyyzz)}(x) -> FUNC_{ABC}(x)
+    has_deriv = re.search(r'(.*)_\{(.*)\((.*)\)\}',func_name)
+    if has_deriv is not None:
+        func_name = has_deriv.group(1)
+        if has_deriv.group(2) != '':
+            func_name = func_name+'_{'+has_deriv.group(2)+'}'
+        
+        func_name= func_name + '(x)'  # put (x) back on
+        
+        # derivatives is tuple of 0,1,2 for x ,y, z
+        symbol_map = {'x':0,'y':1,'z':2}
+        derivatives = tuple(symbol_map[s] for s in has_deriv.group(3))
+    else:
+        derivatives = None
+    return func_name,derivatives,projection
+
+
+def assemble_func_name(func_name,derivatives=None,projection=None):
+    import re
+    # check if the base_func name has subscript:
+    has_suffix = re.search('(.*)_\{(.*)\}\(x\)',func_name)
+    if has_suffix is not None:
+        suffix = has_suffix.group(2)
+        func_name = has_suffix.group(1)
+    else:
+        suffix = ''
+        func_name = func_name[:-3] # remove (x)
+    
+    
+    symbol_map = {0:'x',1:'y',2:'z'}
+    if derivatives is not None:
+        suffix = suffix +'('+ ''.join(symbol_map[s] for s in derivatives)+')'
+
+    new_name = func_name
+    if suffix != '':
+        new_name = new_name +'_{' + suffix + '}'
+    
+    if projection is not None:
+        new_name = '(' + new_name + ')_{'+''.join(str(s) for s in projection)+'}'
+    
+    new_name = new_name +'(x)'
+    return new_name
+    
+    
+def extract_base_function_name(func_name,skip_derivatives=False):
+
+    import re
+    # remove projection syntax: (FUNC_{ABC})_(1234...)(x) -> FUNC_ABC(x)
+    
+    name = re.search('\((.*)\)_\{.*\}(x)',func_name)
+    if name is not None:
+        func_name = name.group(1)+'(x)'
+    
+    
+    if not skip_derivatives:
+        # remove derivative syntax: FUNC_{ABC(xxyyzz)}(x) -> FUNC_{ABC}(x)
+        has_deriv = re.search(r'(.*)_\{(.*)\(.*\)\}',func_name)
+        if has_deriv is not None:
+            func_name = has_deriv.group(1)+'_{'+has_deriv.group(2)+'}'+'(x)'
+    
+    return func_name

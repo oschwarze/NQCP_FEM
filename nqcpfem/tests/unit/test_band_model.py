@@ -200,7 +200,7 @@ class TestBandModel(TestCase):
         numerical = H._saved_numerical_array
         symbolic = H._saved_symbolic_tensor_repr
         numerical_tensor = H._saved_numerical_tensor_repr
-        post_processor = H._saved_array_post_processor
+        post_processor = H._saved_post_processor
         import copy
         pre_processed = copy.copy(H.independent_vars.get_stored_attribute('preprocessed_array'))
         
@@ -218,7 +218,7 @@ class TestBandModel(TestCase):
         self.assertFalse( symbolic._modified_time_ ==  H._saved_symbolic_tensor_repr._modified_time_)
         
         self.assertFalse( numerical_tensor._modified_time_ ==  H._saved_numerical_tensor_repr._modified_time_)
-        self.assertTrue( post_processor ==  H._saved_array_post_processor)
+        self.assertTrue( post_processor ==  H._saved_post_processor)
         
 
         
@@ -227,7 +227,7 @@ class TestBandModel(TestCase):
         numerical = H._saved_numerical_array
         symbolic = H._saved_symbolic_tensor_repr
         numerical_tensor = H._saved_numerical_tensor_repr
-        post_processor = H._saved_array_post_processor
+        post_processor = H._saved_post_processor
         
         pre_processed = copy.copy(H.independent_vars.get_stored_attribute('preprocessed_array'))
         
@@ -249,17 +249,17 @@ class TestBandModel(TestCase):
         self.assertFalse( numerical._modified_time_ ==  H._saved_numerical_array._modified_time_)
         self.assertTrue( symbolic._modified_time_ ==  H._saved_symbolic_tensor_repr._modified_time_)
         self.assertFalse( numerical_tensor._modified_time_ ==  H._saved_numerical_tensor_repr._modified_time_)
-        self.assertTrue( post_processor ==  H._saved_array_post_processor)
+        self.assertTrue( post_processor ==  H._saved_post_processor)
 
 
-        H.independent_vars['postprocessing_function_specification']['test'] = lambda x,model:2*x
+        H.independent_vars['postprocessing_function_specification']['test'] = lambda arr,funcs,model:(2*arr,funcs)
         
         # extract status of attributes
         post_processed = H._saved_post_processed_array
         numerical = H._saved_numerical_array
         symbolic = H._saved_symbolic_tensor_repr
         numerical_tensor = H._saved_numerical_tensor_repr
-        post_processor = H._saved_array_post_processor
+        post_processor = H._saved_post_processor
         pre_processed = H.independent_vars.get_stored_attribute('preprocessed_array')
 
         H.numerical_tensor_repr() # updates everything
@@ -269,7 +269,7 @@ class TestBandModel(TestCase):
         self.assertFalse( numerical._modified_time_ ==  H._saved_numerical_array._modified_time_)
         self.assertFalse( symbolic._modified_time_ ==  H._saved_symbolic_tensor_repr._modified_time_)
         self.assertFalse( numerical_tensor._modified_time_ ==  H._saved_numerical_tensor_repr._modified_time_)
-        self.assertFalse( post_processor ==  H._saved_array_post_processor)
+        self.assertFalse( post_processor ==  H._saved_post_processor)
         
         # test if the syncing is correctly updated when:
         # - just assembling the array
@@ -280,11 +280,11 @@ class TestBandModel(TestCase):
     def test_array_post_processor(self):
         from unittest.mock import MagicMock
     
-        func_A = MagicMock(return_value=1)
+        func_A = MagicMock(return_value=(1,2))
         del func_A._modified_time_
-        func_B = MagicMock(return_value=2)
+        func_B = MagicMock(return_value=(2,3))
         del func_B._modified_time_
-        func_C = MagicMock(return_value=3)
+        func_C = MagicMock(return_value=(3,4))
         del func_C._modified_time_
         H = self.scalar_problem
         
@@ -292,16 +292,16 @@ class TestBandModel(TestCase):
         H.independent_vars['postprocessing_function_specification']['BdG'] = func_B
         
         res=H.post_processed_array()
-        func_A.assert_called_once_with(H.independent_vars['preprocessed_array'],model=H) #model must be kwarg because this is how it is defined in partial
-        func_B.assert_called_once_with(1,model=H)
-        self.assertTrue(res==2)
+        func_A.assert_called_once_with(H.independent_vars['preprocessed_array'],H.independent_vars['function_dict'],model=H) #model must be kwarg because this is how it is defined in partial
+        func_B.assert_called_once_with(1,2,model=H)
+        self.assertEqual(res,2)
 
         
         # test that updating also works
         H.independent_vars['postprocessing_function_specification']['A-field'] = func_C
         res = H.post_processed_array()
-        func_C.assert_called_once_with(1,model=H)
-        func_B.assert_called_with(3,model=H)
+        func_C.assert_called_once_with(1,2,model=H)
+        func_B.assert_called_with(3,4,model=H)
         
     def test_make_array(self): 
         # test that the array is correctly built with and without a post-processing step
@@ -313,9 +313,9 @@ class TestBandModel(TestCase):
         self.assertTrue(__compare_sympy_arrays__(res,self.scalar_A),msg=f'post_processed array was not correct: expected \n{self.scalar_A}\n got:\n{res}')
         
         # add post_processor (casting as nparray) and verify that we get the correct thing out again
-        def func(x,model):
+        def func(x,func_dict,model):
             pass
-            return np.array(x)
+            return np.array(x),func_dict
         
         mock = MagicMock(side_effect=func)
         del mock._modified_time_
@@ -434,10 +434,10 @@ class TestBandModel(TestCase):
         # test that the parameters are correctly added to the parameter dict
         self.spinor_problem.material_spec('Ge')
         from nqcpfem import _m_e
-        facit = {r'Delta_{0}': 0.296,
-                 r'gamma_{1}': 13.38,
-                 r'gamma_{2}': 4.24,
-                 r'gamma_{3}': 5.69,
+        facit = {r'\Delta_{0}': 0.296,
+                 r'\gamma_{1}': 13.38,
+                 r'\gamma_{2}': 4.24,
+                 r'\gamma_{3}': 5.69,
                  r'kappa': 3.41,
                  r'q': 0.06,
                  r'D_{u}': 3.3195,
@@ -446,7 +446,7 @@ class TestBandModel(TestCase):
                  r'c_{12}': 4.13,
                  r'c_{44}': 6.83,
                  r'a': 5.65791,
-                 r'epsilon': 16.5,
+                 r'\epsilon': 16.5,
                  r'm': _m_e}
         facit = {sympy.symbols(k):v for k,v in facit.items()}
         self.assertEqual({k:self.spinor_problem.independent_vars['parameter_dict'][k] for k in facit.keys()}, facit)
@@ -483,8 +483,8 @@ class TestBandModel(TestCase):
         self.assertTrue(all( s not in self.scalar_problem.post_processed_array().free_symbols for s in (sympy.symbols('k_{z}',commutative=False),sympy.symbols('z'))),msg='kz and/or z were not all replaced')
         V1,V2,V3 = [v[0] for v in self.funcs]
         res = self.scalar_problem.post_processed_array().subs({k:0 for k in self.scalar_problem.momentum_symbols})
-        V2s1 = sympy.Symbol('(V2)_1(x)',commutative=False)
-        V2s2 = sympy.Symbol('(V2)_2(x)',commutative=False)
+        V2s1 = sympy.Symbol('(V2)_{1}(x)',commutative=False)
+        V2s2 = sympy.Symbol('(V2)_{2}(x)',commutative=False)
         facit = sympy.Array([[[[sympy.pi**2/sympy.symbols('l_z')**2+V2s1+V3,0],[0,4*sympy.pi**2/sympy.symbols('l_z')**2+V2s2+V3]]]])
         self.assertTrue(__compare_sympy_arrays__(res,facit))
 
@@ -689,11 +689,11 @@ class TestLuttingerKohnHamiltonian(TestCase):
         import nqcpfem
         from nqcpfem.band_model import FreeBoson,FreeFermion
         H = nqcpfem.band_model.LuttingerKohnHamiltonian()
-        self.assertTrue(all(sympy.symbols(k) in H.independent_vars['parameter_dict'].keys() for k in (r'gamma_{1}',r'gamma_{2}',r'gamma_{3}','m',)))
+        self.assertTrue(all(sympy.symbols(k) in H.independent_vars['parameter_dict'].keys() for k in (r'\gamma_{1}',r'\gamma_{2}',r'\gamma_{3}','m',)))
         self.assertTrue(__compare_sympy_arrays__(H.independent_vars['preprocessed_array'] ,nqcpfem.band_model.LuttingerKohnHamiltonian.__make_LK_Hamiltonian__()))
 
         K = sympy.symbols([s.name for s in H.momentum_symbols],commutative=False)
-        g1,g2,g3 = sympy.symbols(r'gamma_{1},gamma_{2},gamma_{3}')
+        g1,g2,g3 = sympy.symbols(r'\gamma_{1},\gamma_{2},\gamma_{3}')
         h = nqcpfem.constants['hbar']
         A = h**2/(2*sympy.symbols('m'))
         """SIGN IS WRONG HERE!
@@ -742,7 +742,7 @@ class TestLuttingerKohnHamiltonian(TestCase):
         array = H.post_processed_array()
         
         ss = lambda x: sympy.symbols(x)
-        symbol_subs = {ss(r'gamma_{1}'):0, ss(r'gamma_{2}'):0 ,ss(r'gamma_{3}'):0}
+        symbol_subs = {ss(r'\gamma_{1}'):0, ss(r'\gamma_{2}'):0 ,ss(r'\gamma_{3}'):0}
         symbol_subs[q] = 0
         kappa_result = array.subs(symbol_subs)
         self.assertTrue(__compare_sympy_arrays__(kappa_result,kappa_facit))

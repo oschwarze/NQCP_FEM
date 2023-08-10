@@ -75,7 +75,7 @@ def derivative_of_function(symbol,pos_sym):
         conjugate=False
     
     
-    
+    """
     symbol_name = symbol.name[:-3]
     # get the suffix
     suffix = re.search('(.*)_\{(.*)\}(.*)',symbol_name)
@@ -108,6 +108,14 @@ def derivative_of_function(symbol,pos_sym):
             deri_suff  = ('').join(['x']*Xs+['y']*Ys+['z']*Zs)
             base_suffix = derivatives.group(1)
         name = bare_name[0] + '_{'+base_suffix+'('+deri_suff+')}'+bare_name[1]+'(x)'
+    """
+    from . functions import decompose_func_name,assemble_func_name
+    base_name,derivatives,projections = decompose_func_name(symbol.name)
+
+    derivative_direction = 0 if pos_sym.name == 'x' else (1 if pos_sym.name =='y' else 2 )
+    derivatives = (derivative_direction,) if derivatives is None else sorted(derivatives+(derivative_direction,))
+    
+    name = assemble_func_name(base_name,derivatives,projections)
     
     derivative = sympy.Symbol(name,commutative=False)
     if conjugate: # conjugat before mul to avoid conjugating other factor as well
@@ -337,15 +345,15 @@ def array_sort_out_polynomials(expression:sympy.Array,symbols):
         for p in parts:
             # put the parts into their respective tuple arrays
             if p[0] not in tuple_dict:
-                arr = [sympy.sympify(0)]*len(expression) # flattened version of array for easier indexing
+                arr = sympy.Array([sympy.sympify(0)]*len(expression)).reshape(*expression.shape).as_mutable() # flattened version of array for easier indexing
                 tuple_dict[p[0]] = arr
             else:
                 arr = tuple_dict[p[0]]
-            arr[i] += p[1] # add the coefficient to the array
+            
+            arr[np.unravel_index(i,expression.shape)] += p[1] # add the coefficient to the array
             
     
-    # reshape into arrays
-    return_dict = {k:sympy.Array(a).reshape(*expression.shape) for k,a in tuple_dict.items()}
+    return_dict = {k:sympy.Array(a) for k,a in tuple_dict.items()}
     return return_dict
     
 
@@ -478,7 +486,7 @@ def symbolize_array(array,symbol_base_name):
         index_counter = 0 
         while True:
             index_counter +=1
-            next_name = '('+symbol_base_name+f')_{index_counter}(x)'
+            next_name = '('+symbol_base_name+')_{'+str(index_counter)+'}(x)'
             yield sympy.Symbol(next_name,commutative=False)
     
     all_position_syms = (X,Y,Z) +sympy.symbols('x,y,z')

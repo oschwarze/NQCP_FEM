@@ -45,21 +45,12 @@
 # check which constants where used and return a COMPUTEDATTRIBUTE with the return of the method along with the relevant dependencies, and set all flags to None for good measure
 
 """
-from locale import locale_alias
-from tracemalloc import Snapshot
-from turtle import update
 from typing import Any
 import time
-from xml.dom.minidom import Attr
-
-
-
-
-
+import sympy
 
 from collections import namedtuple,UserDict
 
-from attr import attributes
 
 # The ConstantsDict class is a subclass of UserDict that represents a dictionary of constants.
 class ConstantsDict(UserDict):
@@ -132,7 +123,7 @@ class ConstantsDict(UserDict):
             
         else:
             if isinstance(item,dict):
-                wrapped_item = ConstantsDict(item) # cast as constants dict so that we can detect changes of the dict even though setitem is not used to alter it.
+                wrapped_item = self.__class__(item) # cast as constants dict so that we can detect changes of the dict even though setitem is not used to alter it.
             elif isinstance(item,UpdatableObject):
                 wrapped_item = item
             else:
@@ -156,6 +147,18 @@ class ConstantsDict(UserDict):
         else:
             return {k:self.get_stored_attribute(k) for k in self.keys()}
     
+
+class SympyConstantsDict(ConstantsDict):
+    """ Alloes acessing entries where the key is a symbol by jsut using the name of the symbol as key"""
+    def __getitem__(self, key: Any) -> Any:
+
+        try:
+            return super().__getitem__(key)
+        except KeyError as err:
+            try:
+                return super().__getitem__(sympy.Symbol(key))
+            except KeyError as err:
+                return super().__getitem__(sympy.Symbol(key,commutative=False))
     
 # The IndependentAttribute class is used to represent an independent attribute in a data set.
 class IndependentAttribute():
@@ -233,11 +236,11 @@ class ComputedAttribute(IndependentAttribute):
 from functools import wraps
 
 class UpdatableObject(IndependentAttribute):
-    def __init__(self,**kwargs) -> None:
+    def __init__(self,use_sympy_dict=False,**kwargs) -> None:
         if '__class__' in kwargs:
             del kwargs['__class__']
         super().__init__(value=self) # this allows it to act as an IndependentAttribute
-        self._independent_vars_ = ConstantsDict(kwargs)
+        self._independent_vars_ = ConstantsDict(kwargs) 
         self.__dependency_check_active__ = False
         
         #whether to return the computed value of a method (False) or return it as a computed attribute.
@@ -371,6 +374,14 @@ class UpdatableObject(IndependentAttribute):
             else:
                 new_dependencies[k] = dep.update()
         return new_dependencies
+
+    def __getstate__(self):
+        return dict(self.independent_vars).copy()
+    
+    def __setstate__(self,state):
+        self.__init__(**state)
+
+
 from copy import copy
 
 def auto_update(computation_method):

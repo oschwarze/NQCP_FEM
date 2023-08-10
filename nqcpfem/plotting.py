@@ -4,7 +4,7 @@ import dolfinx
 
 
 
-def plot_eigenvector(eigenvector,function_space,spin=False,color=None,scaling =True,length_scale=1,drop_abs=False,keep_sign=False,return_plot=False,**kwargs):
+def plot_eigenvector(eigenvector,function_space,color=None,scaling =True,length_scale=1,drop_abs=False,keep_sign=False,return_plot=False,**kwargs):
 		"""
 		Plot the eigenvector of a band-model
 		:param np.ndarray eigenvector: the eigenvector solution
@@ -13,41 +13,46 @@ def plot_eigenvector(eigenvector,function_space,spin=False,color=None,scaling =T
 		:param str|None arrow: what arrows in the plot represent. Default is spin
 		:return:
 		"""
-		pure_eigenvector = eigenvector
-		from matplotlib.colors import SymLogNorm
-		colormap = SymLogNorm(linthresh=0.03, linscale=0.03,
-		                      vmin=-1.0, vmax=1.0, base=10)
-		n_tol = 1e-9
-		try:
-			z_expec_norm = np.linalg.norm(eigenvector, axis=1)
-			scaled_vector = eigenvector * np.linalg.norm(eigenvector)/ np.max(np.abs(z_expec_norm))
-		except np.AxisError as err:
-			scaled_vector = eigenvector / np.linalg.norm(eigenvector)
-		normalization = np.linalg.norm(eigenvector.reshape(eigenvector.shape[0],-1), axis=1) # flatten the spinor dims to one dim and normalize
+		from .envelope_function import EnvelopeFunctionModel
+		if isinstance(function_space,EnvelopeFunctionModel):
+			function_space = function_space.function_space()
+		normalization = np.linalg.norm(eigenvector.reshape(-1,eigenvector.shape[-1]), axis=0) # flatten the spinor dims to one dim and normalize
 		if not scaling:
 			#normalization = np.ones_like(normalization)
 			scaled_vector = eigenvector
-		spinor_normalized = eigenvector /normalization[(..., *([np.newaxis for _ in range(1,len(eigenvector.shape))]))]  # normalize the spinor components
-		eigenvector = spinor_normalized
-		eigenvector[normalization < n_tol] = np.nan
+		n_tol = 1e-7
+		eigenvector[...,normalization < n_tol] = np.nan
 		#hh_lh_expec = np.abs(eigenvector[:, 0]) ** 2 + np.abs(eigenvector[:, 1]) ** 2 + np.abs(eigenvector[:, 2]) ** 2 + np.abs(
 		#	eigenvector[:, 3]) ** 2
 		p = pyvista.Plotter()
 		topology, cell_types, x = dolfinx.plot.create_vtk_mesh(function_space)
 		x = x*length_scale # scale x axis
 		grid = pyvista.UnstructuredGrid(topology, cell_types, x)
+		
+  
 		if keep_sign:
 			if len(scaled_vector.shape) >3 or (len(scaled_vector.shape) == 2 and scaled_vector.shape[1]>1):
 				raise SyntaxError(f'wrong shape of keep_sign=True')
 			grid["u"] = scaled_vector
 		else:
-			grid["u"] = np.linalg.norm(scaled_vector.reshape((scaled_vector.shape[0],-1)), axis=1)  # positional wave-function shape
-			grid['c'] = np.linalg.norm(eigenvector.reshape((eigenvector.shape[0],-1)),axis=1) # for color scale
+			grid["u"] = np.linalg.norm(eigenvector.reshape((-1,eigenvector.shape[-1])), axis=0)  # positional wave-function shape
+			grid['c'] = np.linalg.norm(eigenvector.reshape((-1,eigenvector.shape[-1])),axis=0) # for color scale
 		#grid['hh_lh'] = hh_lh_expec
 		warped = grid.warp_by_scalar("u")
 		grid['u'] = grid['u']
 
-		if spin:
+		
+
+		#p.add_mesh(grid, scalars='hh_lh', nan_color='black', clim=[-1, 1])
+		p.add_mesh(warped,scalars='u',color='c',**kwargs)
+		p.show_axes()
+		if return_plot:
+			return p
+
+		p.show()
+  
+		"""
+  		if spin:
 			xy_eigvec = np.linalg.norm(eigenvector.reshape((eigenvector.shape[0],eigenvector.shape[1],-1)),axis=-1)
 			z_expec = 3 / 2 * np.abs(xy_eigvec[:, 0]) ** 2 + 1 / 2 * np.abs(xy_eigvec[:, 1]) ** 2 - 1 / 2 * np.abs(
 				xy_eigvec[:, 2]) ** 2 - 3 / 2 * np.abs(xy_eigvec[:, 3]) ** 2
@@ -57,14 +62,7 @@ def plot_eigenvector(eigenvector,function_space,spin=False,color=None,scaling =T
 			warped['arrows'] = spin_vec * 3
 			arrows = warped.glyph(scale='arrows', orient='arrows')
 			p.add_mesh(arrows,lighting=False, color='black',opacity=0.5)
-
-		#p.add_mesh(grid, scalars='hh_lh', nan_color='black', clim=[-1, 1])
-		p.add_mesh(warped,scalars='u',color='c',**kwargs)
-		p.show_axes()
-		if return_plot:
-			return p
-
-		p.show()
+		"""
 
 
 def plot_function(func,function_space,rescale=True,length_scale=1,show_xy_plane=False,return_plotter=False):

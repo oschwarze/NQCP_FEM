@@ -4,37 +4,104 @@ from .solvers import ModelSolver
 import logging
 import numpy as np
 from scipy.optimize import minimize
-from abc import ABC
+import pickle as pkl
+import os 
 
 from typing import Iterable
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
 
 
+class NotLoadedError(Exception):
+    pass
 
-
-class ParameterSearch(ABC):
-    def __init__(self,solver,ef_construction_func,post_processing_func):
+#TODO: figure out whch type id indexable
+class ParameterSearch():
+    def __init__(self,parameter_sets:Iterable,evaluation_function,save_file:str|None=None):
         """
-        ABC for processes that define an envelope function model, solves it, and processes the resulting functions
-        in some way.
-        :param Solver solver: the solver used to solve the envelope function model
-        :param Callable ef_construction_func:  Callable taking some parameters (depends on the context of the subclass) and returns an envelope function
-        :param Callable post_processing_func:  callable taking results of solving the EFM
+        Class which runs a for-loop over the specified parameters, uses them to evaluate a function, and stores the return value of
+        the function. The ParameterSearch can save the result after each iteration which allows interuption of the loop without having to start all over again.
+        :param parameter_sets: tuple containing args (tuple) and kwargs (dict). If the `parameter_sets` is a dict it is interpreted as kwargs only and if `parameter_sets` is a tuple of length >2 
         """
-        self.solver = solver
-        self.ef_construction_func = ef_construction_func
-        self.post_processing_func = post_processing_func
+        self.parameter_sets = parameter_sets
+        self.evaluation_function = evaluation_function
+        self.save_file = save_file
+        self._results_ = []
+    
+    def save(self,overwrite=False):
+        """
+        saving of the instance, possibly overwriting the file
+        Args:
+            filename: str
+            overwrite: bool
+        Returns:
+        """
+        if self.save_file is None:
+            raise ValueError(f'save_file name was not passed to parametersearch. Unable to save.')
+        
+        import pickle as pkl
+        if not overwrite:
+            import os
+            if os.path.exists(self.save_file):
+                raise FileExistsError(f'file {self.save_file} already exists and overwrite was set to False')
 
+        with open(self.save_file,'wb') as f:
+            pkl.dump(self,f)
+        
+            
+    def __raise_not_loaded__(self,*args,**kwargs):
+        return NotLoadedError('Evaluation function cannot be saved, so the .evaluation_function attribute must be set to the evaluation funciton manually')
+    
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state['evaluation_function']= self.__raise_not_loaded__
+        return state
+    
+    @property
+    def results(self):
+        return self._results_
+    
+    @classmethod
+    def load(cls,save_file,evaluation_function=None):
+        with open(save_file,'rb') as f:
+            new = pkl.load(f)
+        
+        if evaluation_function is not None:
+            new.evaluation_function = evaluation_function
+        return new
 
-
+    
+    def run(self,save_results=True,skip_errors=True):
+        
+        # resume from here
+        start_i = len(self._results_)
+        
+        for i,param_set in enumerate(self.parameter_sets[start_i:]):
+            LOGGER.info(f'evaluating at grid point {i+1+start_i}/{len(self.parameter_sets)}')
+            if isinstance(param_set,dict):
+                param_set = (tuple(),param_set) # cast as kwargs
+            elif not (isinstance(param_set,tuple)):
+                param_set = ((param_set,),{})
+            try:
+                result = self.evaluation_function(*param_set[0],**param_set[1])
+                self._results_.append(result)
+                if save_results: 
+                    self.save(overwrite=True)
+    
+            except Exception as err:
+                if (not skip_errors) or isinstance(err,NotLoadedError):
+                    raise err
+                else:
+                    LOGGER.warn(err)
+                    self._results_.append(np.nan)
+                
+    
 class GridSearch(ParameterSearch):
     """
-    Determine eigenvalues of the given envelope function model for different parameter specifications
+    Specific ParameterSearch where the parameters sets are formed by a ParameterGrid (checking all combinations of values for the different arguments)
     """
-    def __init__(self,parameter_grid,solver,ef_construction_func,post_processing_func,exact_point_set =False):
+    def __init__(self,parameter_grid,evaluation_function,save_file=None):
         """
-
         :param dict|list parameter_grid:
         :param ModelSolver solver:
         :param Callable ef_construction:
@@ -43,76 +110,17 @@ class GridSearch(ParameterSearch):
         :param Callable post_processing_func: the function to apply to the outcome of the model and save the return of this function.
         The function must take the EF model, the Parameter set passed to the ef_construction function and the model results
         """
-        super().__init__(solver, ef_construction_func, post_processing_func)
         self.parameter_grid = parameter_grid # the possible parameters which to run the model for
 
 
-        if exact_point_set:
-            if not isinstance(parameter_grid,list):
-                raise TypeError(f' exact_point_set = True requires passing the parameter_grid as a list og dicts')
-            self._grid_points_ = parameter_grid
-        else:
-            self._grid_points_ = []
-        self.results = []
-    @property
-    def grid_points(self):
-        if self._grid_points_ == []:
-            self._grid_points_ = [p for p in ParameterGrid(self.parameter_grid)]
-        return self._grid_points_
-    def run_gridsearch(self,sparse=True,save=None,skip_errors=False):
-        """
-        :param skip_errors:
-        :param int n_saves: How many eigenvectors of each gridpoint to store
-        :param bool skip_errors: Whether to ingore any errors raised
-        :return:
-        """
-        resume_from = len(self.results)
-        for i,parameter_set in enumerate(self.grid_points):
-            if i<resume_from:
-                continue # skip the ones we have seen
-            LOGGER.info(f'evaluating at grid point {i+1}/{len(self.grid_points)}')
-            try:
-                ef_model = self.ef_construction_func(**parameter_set)
-                result = self.solver.solve(ef_model,sparse)
-                self.results.append(self.post_processing_func(ef_model, parameter_set, result))
-            except Exception as err:
-                if skip_errors:
-                    LOGGER.warning(err)
-                    self.results.append(np.nan)
-                else:
-                    raise err
+        parameter_sets = list(ParameterGrid(parameter_grid))
+        super(GridSearch,self).__init__(parameter_sets,evaluation_function,save_file)
+        
 
-            if save is not None:
-                LOGGER.info(f'saving results to {save}')
-                self.save(save,overwrite=True)
-    def save(self,filename,overwrite=False):
-        """
-        saving of the instance, possibly overwriting the file
-        Args:
-            filename: str
-            overwrite: bool
-        Returns:
-        """
-        import pickle as pkl
-        if not overwrite:
-            import os
-            if os.path.exists(filename):
-                raise FileExistsError(f'file {filename} already exists and overwrite was set to False')
-
-        with open(filename,'wb') as f:
-            pkl.dump(self,f)
-
-
-    def __getstate__(self):
-        state = self.__dict__.copy()
-        state['ef_construction_func'] = None
-        state['post_processing_func'] = None
-
-        return state
 
     def to_dataframe(self,results_formatter = None)-> pd.DataFrame:
-        df=pd.DataFrame(self.grid_points)
-        res = self.results + [None]*(len(self.grid_points)-len(self.results))
+        df=pd.DataFrame(self.parameter_sets)
+        res = self._results_ + [None]*(len(self.parameter_sets)-len(self._results_))
         if results_formatter is not None:
             res = [results_formatter(r) for r in res]
         df['results'] = res

@@ -198,5 +198,21 @@ class TestSymbolic(TestCase):
         facit_array = sympy.Array([[facit_00,facit_01],[facit_10,facit_11]])
 
         
-        
         self.assertEqual(result,facit_array)
+
+        import numpy as np
+        ext_array = np.zeros((2,2,3,3),dtype='O')
+        ext_array[:,:,0,0] = np.array(array) 
+        ext_array[:,:,1,1] = np.array(array) 
+        ext_array[:,:,2,2] = np.array(array) 
+        
+        result = arange_ks_array(ext_array,'all left','left')
+        ext_facit = np.zeros((2,2,3,3),dtype='O')
+        ext_facit[:,:,0,0] = np.array(facit_array) 
+        ext_facit[:,:,1,1] = np.array(facit_array) 
+        ext_facit[:,:,2,2] = np.array(facit_array) 
+        
+        np.testing.assert_array_equal(np.array(result),ext_facit)
+        
+        
+    
