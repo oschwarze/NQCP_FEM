@@ -97,6 +97,12 @@ class Function(ABC):
         # The return value must be an array contianing floats and symbols representing new functions: `(`symbol_name`)_{nm}(x)`  as well as a dict of the corresponding functions (keys are the symbols)
         raise NotImplementedError()
     
+    
+    @abstractmethod
+    def pow(self,order):
+        """from f(x) Comute a new function g(x) = (f(x))**order as a new function. The symbol of the new function should be f^order(x) with f being the base name """
+        raise NotImplementedError
+    
     def determine_derived_function(self,other_function_name):
         
         
@@ -298,11 +304,21 @@ class SymbolicFunction(Function):
         func = {f:SymbolicFunction(v,f,projection_spec=projection_spec) for f,v in funcs.items()}
         return symbolic_array,func
 
+    def pow(self,order):
+        new_name = pow_name(self.symbol.name,order)
+        from copy import copy
+        new = copy(self)
+        new.symbol = sympy.Symbol(new_name,commutative=False)
+        new._expression_ = self.expression**order
+        
+        return new
+        
+        
     def __getstate__(self):
-        return {'expr':self.expression,'symbol': self.symbol}
+        return {'expr':self.expression,'symbol': self.symbol,'projection_spec':self.projection_spec}
     
     def __setstate__(self,state):
-        self.__init__(state['expr'],state['symbol'])
+        self.__init__(state['expr'],state['symbol'],projection_spec=state['projection_spec'])
     
     def __eq__(self, __value: object) -> bool:
         if not isinstance(__value,type(self)):
@@ -570,7 +586,17 @@ class NumericalFunction(Function):
         raise NotImplementedError(f'TODO:  numerial projection')
         return super().project_to_basis(n_modes, type, **kwargs)
     
-    
+    def pow(self,order):
+        def power_func(func,order):
+            def power(x,y=None,z=None):
+                return func(x,y,z)**order
+            return power
+        import copy
+        new = copy.copy(self)
+        new._function_ = power_func(self,order)
+        new.symbol = sympy.Symbol(pow_name(self.symbol.name,order),commutative=False)
+        return new
+        
 class PlaceHolderFunction(NumericalFunction):
     
     def __init__(self,symbol,spatial_dependencies=None,is_constant=False):
@@ -629,7 +655,10 @@ class PlaceHolderFunction(NumericalFunction):
         
         return sympy.Array(new_array),func_dict
 
-
+    def pow(self,order):
+        new_sym = sympy.Symbol(pow_name(self.symbol.name,order),commutative=False)
+        
+        return PlaceHolderFunction(new_sym,self.spatial_dependencies,self.is_constant)
 
 def decompose_func_name(func_name):
     # decompose into base_name projection stuff and derivatives
@@ -690,6 +719,7 @@ def assemble_func_name(func_name,derivatives=None,projection=None):
     
 def extract_base_function_name(func_name,skip_derivatives=False):
 
+
     import re
     # remove projection syntax: (FUNC_{ABC})_(1234...)(x) -> FUNC_ABC(x)
     
@@ -705,3 +735,14 @@ def extract_base_function_name(func_name,skip_derivatives=False):
             func_name = has_deriv.group(1)+'_{'+has_deriv.group(2)+'}'+'(x)'
     
     return func_name
+
+def pow_name(func_name,order):
+    f_base,f_deriv,f_proj = decompose_func_name(func_name)
+    import re
+    subscript = re.search(r'(.*)_\{(.*)\}\(x\)',f_base)
+    if subscript is not None:
+        new_name = subscript.group(1)+ f'^{order}' + '_{' + subscript.group(2) + '}(x)'
+    else:
+        new_name = f_base[:-3] + f'^{order}(x)'
+    return assemble_func_name(new_name,f_deriv,f_proj)
+    

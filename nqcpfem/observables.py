@@ -1,3 +1,4 @@
+from locale import normalize
 from . import band_model as bm
 from . import envelope_function
 import numpy as np
@@ -52,12 +53,21 @@ class Observable(np.ndarray):
         return l_vector_indices,tensor_indices,r_vector_indices
 
     def mel(self, vector, other_vector=None):
+        # noramlize the vector:
+        vector_norm = np.linalg.norm(vector)
+        
         if other_vector is None:
             other_vector = vector
-
+            other_vector_norm = vector_norm
+        else:
+            other_vector_norm = np.linalg.norm(other_vector)
+            
+            
         l_vector_indices,tensor_indices,r_vector_indices = self._get_summation_indices_(vector.shape)
         expval = np.einsum(vector.conj(), l_vector_indices, self, tensor_indices, other_vector, r_vector_indices)
-
+        expval = expval/(vector_norm*other_vector_norm)
+        
+        
         if other_vector is vector: # expectation values of observables are always real
             return np.real(expval) 
         return expval # case for non-diagonal matrix elements

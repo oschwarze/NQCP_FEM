@@ -30,6 +30,8 @@ from .symbolic import __MOMENTUM_NAMES__,__POSITION_NAMES__,dummify_non_commutat
 __MAGNETIC_FIELD_NAMES__ = (r'B_{x}(x)',r'B_{y}(x)',r'B_{z}(x)') # These are always treated as functions!
 __VECTOR_FIELD_NAMES__ =  (r'A_{x}(x)',r'A_{y}(x)',r'A_{z}(x)') # these are always treated as functions!
 
+__STRAIN_NAMES__ = tuple(r'\varepsilon_{'+('x','y','z')[i]+('x','y','z')[j]+'}(x)' for i in range(3) for j in range(i,3))
+
 from .updatable_object import UpdatableObject, auto_update,ComputedAttribute
     
 
@@ -153,6 +155,14 @@ class BandModel(UpdatableObject):
     def constants(self,value):
         self.independent_vars['constants'] = value
     
+    @property
+    def function_dict(self):
+        return self.independent_vars['function_dict']
+    
+    @function_dict.setter
+    def functioN_dict(self,value):
+        self.independent_vars['function_dict'] = value
+    
     #endregion
     @property
     def spatial_dim(self):
@@ -160,6 +170,27 @@ class BandModel(UpdatableObject):
     
     # region postprocessing and building  / casting    
     
+    def validate_model(self):
+        
+        if any(f is not None and not isinstance(f,Function) for f in self.function_dict.values()):
+            wrong_funcs = tuple(v for v,f in self.function_dict.values() if ((f is not None) and not isinstance(f,Function)))
+            raise TypeError(f' the following functions in the function dict were not of type nqcpfem.functions.Function: {wrong_funcs}')
+    
+    def validate_numerical_model(self):
+        
+        if any(p is None for p in self.parameter_dict.values()):
+            wrong_params = tuple(v for v,f in self.parameter_dict.values() if f is None )
+            raise ValueError(f'the following parameters were unspecified: {wrong_params}')
+        if any(p is None for p in self.function_dict.values()):
+
+            wrong_params = tuple(v for v,f in self.function_dict.values() if f is None )
+            raise ValueError(f'the following functions were unspecified: {wrong_params}')
+        
+        if any(p is None for p in self.constants.values()):
+            wrong_params = tuple(v for v,f in self.constants.values() if f is None )
+            raise ValueError(f'the following constants were unspecified: {wrong_params}')
+        
+        
     #region array_shape properties
     @property
     def tensor_shape(self):
@@ -557,7 +588,7 @@ class BandModel(UpdatableObject):
         Args:
             material_name (str): Name of the material.
         """
-        from . import _m_e
+        from . import _m_e,_e
         if material_name == 'Ge':
             parameter_dict = {r'\Delta_{0}': 0.296,
                             r'\gamma_{1}': 13.38,
@@ -572,7 +603,8 @@ class BandModel(UpdatableObject):
                             r'c_{44}': 6.83,
                             r'a': 5.65791,
                             r'\epsilon': 16.5,
-                            r'm': _m_e}
+                            r'm': _m_e,
+                            r'q_{c}': _e} #electric charge
         else:
             raise ValueError(f'material name {material_name} not in database')
         
@@ -613,9 +645,9 @@ class BandModel(UpdatableObject):
         new_params = {s:None for s in potential.free_symbols if (s not in constants.keys() and s not in self.position_symbols+self.momentum_symbols)}
         new_params.update( {} if parameters is None else parameters)
         
-        self.independent_vars['parameter_dict'].update(new_params)
+        self.independent_vars['parameter_dict'].update({k:v for k,v in new_params.items() if k not in self.independent_vars['parameter_dict']})
         
-        self.independent_vars['constants'].update(constants)
+        self.independent_vars['constants'].update({k:v for k,v in constants.items() if k not in self.independent_vars['constants']})
         
         return self
         
@@ -633,7 +665,9 @@ class BandModel(UpdatableObject):
         self.independent_vars['function_dict'][A[1]] = None if vector_potential is None else vector_potential[1]
         self.independent_vars['function_dict'][A[2]] = None if vector_potential is None else vector_potential[2]
         
-        self.independent_vars['parameter_dict'][sympy.symbols('q_{c}')] = charge
+        #add parameter if needed
+        if (charge is not None) or (sympy.symbols('q_{c}') not in self.independent_vars['parameter_dict']):
+                self.independent_vars['parameter_dict'][sympy.symbols('q_{c}')] = charge
         
         #cast as Functions
         for a in A: 
@@ -644,9 +678,9 @@ class BandModel(UpdatableObject):
                 else:
                     self.independent_vars['function_dict'][a] = NumericalFunction(f,a,[0,1,2]) if isinstance(f,Callable) else SymbolicFunction(sympy.sympify(f),a)
                 
-
-            
-        self.independent_vars['postprocessing_function_specification']['A-field'] = self.vector_potential_adder
+        # only alter post-processing specification if it is necessary. This avoids raising any 'changed' flags
+        if 'A-field' not in self.independent_vars['postprocessing_function_specification']:
+            self.independent_vars['postprocessing_function_specification']['A-field'] = self.vector_potential_adder
         
         return self
 
@@ -828,7 +862,14 @@ class BandModel(UpdatableObject):
                     elif not t.is_constant(z):
                         matrix = matrix @ sympy.Matrix(z_func(t.args[1] if isinstance(t,sympy.Pow) else 1))
                     elif len(search_symbols) and not t.is_constant(*search_symbols):
-                        projected,added_funcs = new_funcs[t].project_to_basis(2,nz_modes,type=z_confinement_type,**eval_kwargs)
+                        # split this term up if it is a Power:
+                        if isinstance(t,sympy.Pow):
+                            func = new_funcs[t.args[0]].pow(t.args[1])
+                            new_funcs[func.symbol] = func
+                        else:
+                            func = new_funcs[t]
+                        
+                        projected,added_funcs = func.project_to_basis(2,nz_modes,type=z_confinement_type,**eval_kwargs)
                         new_funcs.update(added_funcs)
                         matrix = matrix @sympy.Matrix(projected)
                     else:
@@ -950,7 +991,8 @@ class BandModel(UpdatableObject):
         for b in B:
             # check that B field wsa not supplied
             if func_dict.get(b,None) is not None and not isinstance(func_dict.get(b,None),PlaceHolderFunction):
-                raise ValueError(f'Bot magnetic field and vector potential were specified for the model. When vector potentials are included in the model, the magnetic field is computed automatically')
+                if isinstance(func_dict[b],SymbolicFunction) and func_dict[b].expression != 0: # we overwrite if B is specified as zero.# we overwrite if B is specified as zero.
+                    raise ValueError(f'Bot magnetic field and vector potential were specified for the model. When vector potentials are included in the model, the magnetic field is computed automatically')
 
         # substitue B for curl of A  
         for i in range(3):
@@ -965,10 +1007,12 @@ class BandModel(UpdatableObject):
             akj = func_dict[A[k]].derivative(j)
             ajk =func_dict[A[j]].derivative(k)
             
-            if any(isinstance(a,NumericalFunction) for a in (A[j],A[k])):
+            if any(isinstance(a,PlaceHolderFunction) for a in (akj,ajk)):
+                continue
+            elif any(isinstance(a,NumericalFunction) for a in (akj,ajk)):
                 spatial_deps = [i for i in range(3) if i in akj.spatial_dependencies+ajk.spatial_dependencies]
                 b_function = NumericalFunction(numerical_B_factory(akj,ajk),B[i],spatial_deps)
-            else:
+            else: 
                 b_function = SymbolicFunction(akj.expression-ajk.expression,B[i])
                 
                 
@@ -1261,12 +1305,43 @@ class LuttingerKohnHamiltonian(BandModel):
         
         Zeeman_term = sympy.Matrix([[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]])
         for i in range(3):
-            Zeeman_term = Zeeman_term - 2*mu_B*(kappa_sym*J[i]+q_sym*(J[i]@J[i]@J[i]))*Bsym[i]
+            Zeeman_term = Zeeman_term + 2*mu_B*(kappa_sym*J[i]+q_sym*(J[i]@J[i]@J[i]))*Bsym[i] # plus sign in front because our LK hamiltonian as a global - to make dispersion look particle like 
         
         Zeeman_term = sympy.Array(Zeeman_term)
         self.independent_vars['preprocessed_array'] = self.independent_vars['preprocessed_array']+ Zeeman_term 
         
         return self
+    
+    def add_strain(self,epsilon,Dd=None,Du=None,Du_prime=None,C4=None,C5_prime=None):
+        
+        cs = sympy.symbols(r"D_{d},D_{u} D'_{u},C_{4},C'_{5}")
+        es= sympy.symbols(__STRAIN_NAMES__,comutative=False) # ordered as xx,xy,xz,yy,yz,zz -> 0,6,5,1,3,2
+        
+        # epsilon _matrix 
+        e = sympy.Array([[es[0],es[1],es[2]],[es[1],es[3],es[4]],[es[2],es[4],es[5]]])
+        
+                
+        if isinstance(epsilon,(tuple,list)) and len(epsilon) != 6:
+            raise ValueError('strain tensor must either be passed as an array or a list containing the tensor elements in the forllowing order ´00,11,22,12,02,01´')
+
+        from . import SP_ANGULAR_MOMENTUM
+
+        J = SP_ANGULAR_MOMENTUM['3/2']
+        Jsq =[J[0]@J[0],J[1]@J[1],J[2],J[2]]
+        JJ = sum(Jsq)
+        K = self.momentum_symbols
+        
+        strain_term = cs[0]*(es[0]+es[3]+es[5])
+        
+        
+        for i in range(3):
+            j = (i+1)%3
+            k = (j+1)%3
+            strain_term = strain_term + 2/3*cs[1]*(Jsq[i]-1/3*JJ)+2/3*cs[2]*((J[i]@J[j]+J[j]@J[i])*e[i,j])
+            strain_term = strain_term + cs[3]*(e[j,j]-e[k,k])*K[i]+cs[4]*(e[i,j]*K[j]-e[i,k]*K[j])*J[i]
+        
+        self.independent_vars['preprocessed_array'] = self.independent_vars['preprocessed_array'] - strain_term # minus sign because we have a global minus sign in the LK ham from mkaing spectrum particle like
+        raise NotImplementedError()
     
     #region post-processing_functions
     @staticmethod
