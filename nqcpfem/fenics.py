@@ -300,7 +300,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                     new_param_dict[sym] = f 
         
         
-        new_param_dict['__energy_scale__'] = dolfinx.fem.Constant(self.function_space(),np.complex128(1)) # add the energy scale as a constant as well since it depends on the parameter_dict and we want the ufl_form to be independent of the parameter_dict
+        new_param_dict['__energy_scale__'] = dolfinx.fem.Constant(self.mesh(),np.complex128(1)) # add the energy scale as a constant as well since it depends on the parameter_dict and we want the ufl_form to be independent of the parameter_dict
         if sympy.symbols(r'\hbar') in new_param_dict.keys():
             new_param_dict[sympy.symbols(r'hbar')] = new_param_dict[sympy.symbols(r'\hbar')]
             
