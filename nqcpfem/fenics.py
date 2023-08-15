@@ -277,7 +277,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         pos_syms= sympy.symbols('x,y,z')
         
         # parameter dict with all the symbols to assing and the corresponding 
-        new_param_dict =  {s:dolfinx.fem.Constant(self.function_space(), np.complex128(1)) for s in free_syms} #type: ignore
+        new_param_dict =  {s:dolfinx.fem.Constant(self.mesh(), np.complex128(1)) for s in free_syms} #type: ignore
         
 
         scalar_function_space = self.__make_function_space__(self.mesh(),self.independent_vars['function_class'],1) # interpolate the scalar functions as the same class as the trial and test functions
@@ -742,7 +742,7 @@ class FEniCsObservable(AbstractObservable):
             big_tensor = np.zeros(arr.shape,dtype='O') 
             for x_orders,coeff in x_order_dict.items():
                 # replace complex numbers by dolfinx.fem.Constant!
-                tensor = np.array([dolfinx.fem.Constant(self.envelope_model.function_space(),np.complex128(c)) for c in np.array(coeff).ravel()]).reshape(coeff.shape)
+                tensor = np.array([dolfinx.fem.Constant(self.envelope_model.mesh(),np.complex128(c)) for c in np.array(coeff).ravel()]).reshape(coeff.shape)
 
                 X = ufl.SpatialCoordinate(self.envelope_model.mesh())
                 for i,xo in enumerate(x_orders):
