@@ -322,7 +322,7 @@ class DotSCDot(System):
             # evaluate the model in the left-most, right-most and center points .
             iterative_model_solver.return_func = lambda x:x[0][0] # T number
             init_bracket = []
-            for p in (parameter_range[0],(sum(parameter_range)/2,), parameter_range[1]):
+            for p in (parameter_range[0],2*parameter_range[0]/3+parameter_range[1]/3, parameter_range[1]):
                 init_bracket.append(p)
                 init_bracket.append(iterative_model_solver(p))
             
@@ -790,7 +790,7 @@ class CrossingFinder():
 
 
 
-def GoldenCrossingFinder():
+class GoldenCrossingFinder():
     
     
     def __init__(self,func,x_range,max_iter=18,x_tol=1e-3):
@@ -798,18 +798,33 @@ def GoldenCrossingFinder():
         self.x_range = x_range
         self.max_iter = max_iter
         self.x_tol = x_tol
+        self.y_scale = 1
+
     def minimize(self,xL,fL,xM,fM,xR,fR):
         from scipy.optimize._optimize import Brent
-        brent = Brent(self.func,max_iter=self.max_iter,full_output=True)
+
+        self.y_scale=np.average([fL,fR,fM])
+        
+        
+        
+        xL = self.x_to_scipy(xL)
+        xR = self.x_to_scipy(xR)
+        xM = self.x_to_scipy(xM)
+        fL = fL/self.y_scale
+        fR = fR/self.y_scale
+        fM = fM/self.y_scale
+        
+        brent = Brent(self.wrap_func,maxiter=self.max_iter,full_output=True,disp=3,tol=self.x_tol)
         
         def override_bracket_constructor(*args):
             return (xL,xM,xR,fL,fM,fR,0) # 0 is func_calls
         
         brent.get_bracket_info = override_bracket_constructor
+        print(brent.get_bracket_info())
         
         brent.optimize()
         
-        res = Result(brent.xmin,brent.fval,[],[],list(range(brent.func_calls)))
+        res = Result(brent.xmin,brent.fval,[],[],list(range(brent.funcalls)))
         return res
 
     
@@ -832,13 +847,39 @@ def GoldenCrossingFinder():
             greater = np.where(sorted_x_vals > sorted_x_vals[x_middle_i])[0]    
             less = np.where(sorted_x_vals < sorted_x_vals[x_middle_i])[0]
             if len(greater) and len(less):
-                left = (sorted_x_vals[less[0]],sorted_f_vals[less[0]])
-                middle = (sorted_x_vals[x_middle_i],sorted_f_vals[x_middle_i])
-                right = (sorted_x_vals[greater[0]],sorted_f_vals[greater[0]])
+                left = (float(sorted_x_vals[less[0]]),sorted_f_vals[less[0]])
+                middle = (float(sorted_x_vals[x_middle_i]),sorted_f_vals[x_middle_i])
+                right = (float(sorted_x_vals[greater[0]]),sorted_f_vals[greater[0]])
                 break
         
         else:
             raise ValueError('unable to find bounds for points: {x_vals}, {f_vals}')
         
         return left+middle+right
+    
+    
+    
+    def x_to_scipy(self,x):
+        x_scale = (self.x_range[1]-self.x_range[0])/1000
+
+        # shift so that center of range is at zero
+        x_shift = np.average(self.x_range)
         
+        return (x-x_shift)/x_scale
+    
+    def scipy_to_x(self,sc):
+        
+        x_scale = (self.x_range[1]-self.x_range[0])/1000
+
+        # shift so that center of range is at zero
+        x_shift = np.average(self.x_range)
+
+        return (sc*x_scale)+x_shift
+            
+    def wrap_func(self,x):
+        
+        # because scipy does not hanl ver sall numbes well we have to scale it. The scale is so tha the x_range is divided into 100 pieces
+        scaled_x= self.scipy_to_x(x)
+        res = self.func(scaled_x)
+        print(scaled_x,res)
+        return res/self.y_scale
