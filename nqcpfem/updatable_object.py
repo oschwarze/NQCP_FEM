@@ -155,6 +155,8 @@ class SympyConstantsDict(ConstantsDict):
         try:
             return super().__getitem__(key)
         except KeyError as err:
+            if isinstance(key,sympy.Symbol):
+                raise err 
             try:
                 return super().__getitem__(sympy.Symbol(key))
             except KeyError as err:
@@ -240,7 +242,10 @@ class UpdatableObject(IndependentAttribute):
         if '__class__' in kwargs:
             del kwargs['__class__']
         super().__init__(value=self) # this allows it to act as an IndependentAttribute
-        self._independent_vars_ = ConstantsDict(kwargs) 
+        if use_sympy_dict:
+            self._independent_vars_ = SympyConstantsDict(kwargs)
+        else:
+            self._independent_vars_ = ConstantsDict(kwargs) 
         self.__dependency_check_active__ = False
         
         #whether to return the computed value of a method (False) or return it as a computed attribute.

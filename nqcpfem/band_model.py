@@ -117,7 +117,7 @@ class BandModel(UpdatableObject):
         independent_vars['function_dict']  = {s:None for s in independent_vars['preprocessed_array'].free_symbols if  s.name[-3:] == '(x)'} # type: ignore
         
         # Superconducting order parameter
-        independent_vars['SC_Delta'] = None
+        independent_vars['Delta_SC'] = None
         
         # unit_convention_stuff
         if unit_convention == 'SI' or unit_convention == {}:
@@ -160,8 +160,17 @@ class BandModel(UpdatableObject):
         return self.independent_vars['function_dict']
     
     @function_dict.setter
-    def functioN_dict(self,value):
+    def function_dict(self,value):
         self.independent_vars['function_dict'] = value
+    
+    
+    @property
+    def Delta_SC(self):
+        return self.independent_vars['Delta_SC']
+    
+    @Delta_SC.setter
+    def Delta_SC(self,value):
+        self.independent_vars['Delta_SC'] = value
     
     #endregion
     @property
@@ -377,14 +386,26 @@ class BandModel(UpdatableObject):
         LOGGER.debug(f'building numerical array with var_dict: \n{var_dict}')
         
         # we have to dummify ourselves, because dummies created in lambdify are commutative which we don't want
-        dummy_map = dummify_non_commutative(self.post_processed_array())
-        dummified = self.post_processed_array().subs(dummy_map)
-        value_map = {dummy_map.get(s,s):val for s,val in var_dict.items()} # cast dummy symbols to values
-        numpy_version = np.array(sympy.lambdify(value_map.keys(),dummified,dummify=False)(*value_map.values())) # set Dummify to True to make sure that symbol names do not break the code
+        #dummy_map = dummify_non_commutative(self.post_processed_array())
+        #dummified = self.post_processed_array().subs(dummy_map)
+
+        #value_map = {dummy_map.get(s,s):val for s,val in var_dict.items()} # cast dummy symbols to values
         
-        numpy_version = np.array(dummified.subs(value_map)) # workaround
+        dummy_map,lambdified_arr = self.lambdify_non_commutative()
+        
+        value_map = {v:var_dict[k] for k,v in dummy_map.items()}
+        numpy_version = np.array(lambdified_arr(*value_map.values())) # set Dummify to True to make sure that symbol names do not break the code
+        
+        #numpy_version = np.array(dummified.subs(value_map)) # workaround
         return numpy_version
 
+    @auto_update
+    def lambdify_non_commutative(self):
+        dummy_map = dummify_non_commutative(self.post_processed_array())
+        dummified = self.post_processed_array().subs(dummy_map)
+        lambdified = sympy.lambdify(dummy_map.values(),dummified,dummify=False)
+        return dummy_map,lambdified
+    
     @auto_update
     def symbolic_tensor_repr(self):
         """
@@ -432,6 +453,17 @@ class BandModel(UpdatableObject):
             terms = val.args if isinstance(val,sympy.core.add.Add) else (val,)
             for term in terms: 
                 # compute the k-component_signature
+                if all(k not in term.free_symbols for k in momentum_symbols ):
+                    # skip the simple case. This also avoids problematic piecewise terms 
+                
+                    arr = disassemble_dict.get(0,np.zeros(array.shape,'O'))
+                    arr_i = np.unravel_index(i,array.shape)
+                    term = term.subs({sympy.symbols(r'\hbar'):sympy.symbols('hbar')})
+                    arr[arr_i] += term
+                    disassemble_dict[0] = arr
+
+                    continue
+                
                 if isinstance(term,sympy.Piecewise):
                     # check if the term is a valid piecewise. If not, raise Notimplemented (determine what you want to do)
                     from .symbolic import extract_valid_bipartition_part
@@ -632,8 +664,10 @@ class BandModel(UpdatableObject):
         if (parameters is not None and constants is not None) and any(((k in parameters.keys()) for k in constants.keys())):
             k = next(k for k in constants.keys() if k in parameters.keys())
             raise ValueError(f'A symbol appeared in both the specified parameter dict and the constants dict:\n {k}')
-    
-        
+
+        if isinstance(potential,Function):
+            self.function_dict[potential.symbol]= potential
+            potential = potential.symbol
         
         diagonal_array = potential* sympy.eye(self.independent_vars['preprocessed_array'].shape[0])
         
@@ -642,8 +676,14 @@ class BandModel(UpdatableObject):
         constants = {} if constants is None else constants
         
         # make dict containing all parameters
-        new_params = {s:None for s in potential.free_symbols if (s not in constants.keys() and s not in self.position_symbols+self.momentum_symbols)}
+        new_params = {s:None for s in potential.free_symbols if (s not in constants.keys() and s not in self.position_symbols+self.momentum_symbols and s.name[-3:] !='(x)')}
         new_params.update( {} if parameters is None else parameters)
+        
+        new_functions = {s:PlaceHolderFunction(s) for s in potential.free_symbols if s.name[-3:] =='(x)'}
+        if parameters is not None:
+            new_functions.update({p:v for p,v in parameters.items() if p in new_functions})
+        
+        self.function_dict.update({p:v for p,v in new_functions.items() if p not in self.function_dict})
         
         self.independent_vars['parameter_dict'].update({k:v for k,v in new_params.items() if k not in self.independent_vars['parameter_dict']})
         
@@ -939,7 +979,7 @@ class BandModel(UpdatableObject):
             
         
         time_reversed_array = array.copy().conjugate().subs({k:-1*sympy.conjugate(k) for k in model.momentum_symbols+sympy.symbols(__MAGNETIC_FIELD_NAMES__+__VECTOR_FIELD_NAMES__)}) #type: ignore # momentum symbols separate because they are non-commuting
-        time_reversed_array = sympy.tensorcontraction(sympy.tensorproduct(U,time_reversed_array,U.conjugate().transpose()),(1,2),(3,4)) #NB! this one may need another minus sign! H -> -\Theta H \Theta^{-1} = - U H^* U^\dagger 
+        time_reversed_array = -1*sympy.tensorcontraction(sympy.tensorproduct(U,time_reversed_array,U.conjugate().transpose()),(1,2),(3,4)) #NB! this one may need another minus sign! H -> -\Theta H \Theta^{-1} = - U H^* U^\dagger 
         
         bdg_extended = sympy.Array(sympy.Matrix(sympy.matrices.expressions.blockmatrix.BlockDiagMatrix(sympy.Matrix(array),sympy.Matrix(time_reversed_array)))) # cast first as matrix to get a dense version in stead of a sparse one before casting to array
         
@@ -953,9 +993,9 @@ class BandModel(UpdatableObject):
             bdg_extended = sympy.tensor.array.permutedims(bdg_extended.reshape(*permuted_return_shape),dim_permutation)
             
         # Add SC order parameter
-        if model.independent_vars['SC_Delta'] is not None:
+        if model.independent_vars['Delta_SC'] is not None:
             # us the same post processing func dict as the post processor for the model. This ensures consistency
-            post_processed_delta = model.__postprocessing_constructor__(model.independent_vars['postprocessing_function_specification'],skip_bdg=True)(model.independent_vars['SC_Delta'],model.independent_vars['function_dict'],model)[0]
+            post_processed_delta = model.__postprocessing_constructor__(model.independent_vars['postprocessing_function_specification'],skip_bdg=True)(model.independent_vars['Delta_SC'],model.independent_vars['function_dict'],model)[0]
             np_delta = np.array(post_processed_delta)
             np_delta_adj = np.swapaxes(np.array(post_processed_delta.conjugate()),0,1)
             np_version = np.array(bdg_extended)

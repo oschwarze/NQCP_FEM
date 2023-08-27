@@ -39,6 +39,12 @@ def expand_term(term,split_pow=True):
     if not isinstance(term,Iterable):
         if isinstance(term,sympy.Mul):
             term = term.args
+        elif isinstance(term,sympy.conjugate):
+            if isinstance(term.args[0],sympy.Pow):
+                # return Pow with complex conjugates args (Not sure if this breaks due to branch cuts)
+                term = Pos(sympy.conjugate(term.args[0].args[0]),sympy.conjugate(term.args[0].args[1]))
+            else:
+                term = (term,)
         elif isinstance(term,sympy.Pow):
             term = (term,)
         elif isinstance(term,sympy.Piecewise):
@@ -46,7 +52,7 @@ def expand_term(term,split_pow=True):
             #return (term,)
             raise NotImplementedError()
         else:
-            raise NotImplementedError(f"Didn't know how to split up term: {term} ({type(term)})")
+            raise NotImplementedError(f"Didn't know how to split up term: {term} (type: {type(term)})")
 
     for t in term:
         if split_pow and ( isinstance(t,sympy.Pow) and (not t.args[0].is_constant(Kx,Ky,Kz) or any(s.name[:-3] == '(x)' for s in t.args[0].free_symbols))):

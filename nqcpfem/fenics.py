@@ -16,6 +16,7 @@ if PETSc.ScalarType != np.complex128:
 
 from . import band_model as bm
 from . import symbolic as symb
+from .functions import SymbolicFunction
 import logging
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
@@ -220,32 +221,38 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         # divide out length scale to get dimensions equal for all terms.
         #max_vals =np.array([np.max(np.abs(np.array(sympy.Array(T).subs({d:0 for d in self.independent_vars['band_model'].position_symbols}))))/self.length_scale()**R for R,T in self.independent_vars['band_model'].numerical_tensor_repr().items()]).astype(np.float64)
         #return np.real(np.max(max_vals))#.astype(np.float64) # this number should never be complex
-
         max_vals = []
+        
+        # compute it from the numerical array instead
+        arr = sympy.Array(self.band_model.numerical_array()).subs({k:-1j/self.length_scale() for k in self.band_model.momentum_symbols}).subs({x:0 for x in self.band_model.position_symbols})
+        e= float(np.max(np.real(np.array(arr).astype('complex'))))
+        print(e)
+        
         for R,T in self.band_model.numerical_tensor_repr().items():
             try:
-                max_vals.append(np.max(np.abs(np.array(sympy.Array(T).subs({d:0 for d in self.independent_vars['band_model'].position_symbols}))))/self.length_scale()**R)
+                arr = [np.abs(np.array(sympy.Array(T).subs({d:0 for d in self.independent_vars['band_model'].position_symbols})))]
+                max_vals.append(np.max(arr)/self.length_scale()**R)
             except TypeError as err:
                 pass
             
 #        max_vals =np.array([ for R,T in self.independent_vars['band_model'].numerical_tensor_repr().items()]).astype(np.float64)
         if len(max_vals):
-            return float(np.real(np.max(max_vals)))#.astype(np.float64) # this number should never be complex
+            ee= float(np.real(np.max(max_vals)))#.astype(np.float64) # this number should never be complex
+            print(ee)
+            return(ee)
         else:
             return 1
 
     @auto_update
     def converted_functions(self):
 
-        
-        from .functions import SymbolicFunction,NumericalFunction
         converted_funcs = {}
         symbolic_funcs = {}
         scalar_function_space = self.__make_function_space__(self.mesh(),self.independent_vars['function_class'],1) # interpolate the scalar functions as the same class as the trial and test functions
         fem_x = ufl.SpatialCoordinate(self.mesh())
         variables =  self.dolfinx_constants().copy()
         pos_syms = self.band_model.position_symbols
-        variables.update({pos_syms[i]:fem_x[i] for i in range(self.band_model.spatial_dim)}) # type: ignore
+        variables.update({pos_syms[i]:fem_x[i]*self.length_scale() for i in range(self.band_model.spatial_dim)}) # type: ignore
         for sym,func in self.band_model.post_processed_functions().items():
             if isinstance(func,SymbolicFunction):
                 if isinstance(func.expression,sympy.Piecewise):
@@ -262,7 +269,10 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 f = dolfinx.fem.Function(scalar_function_space)
                 f.name = sym.name
                 
-                f.interpolate(func)
+                #we need to scale the input
+                scaled_func=lambda x:func(x*self.length_scale())
+                f.interpolate(scaled_func)
+                print(scaled_func)
                 converted_funcs[sym] = f 
         return symbolic_funcs,converted_funcs   
     
@@ -271,9 +281,17 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         """
         Constructs a dictionary mapping the free sympy symbols of the post-processed array to dolfinx constanps
         """
+
+        # We avoid accessing the parameter_dict (and hence raising the changed flag) by directly looking at the post-processed functions and arrays for free symbols 
         band_model = self.independent_vars['band_model']
         free_syms = tuple( s for s in band_model.post_processed_array().free_symbols if (s not in band_model.momentum_symbols + band_model.position_symbols) and (s.name[-3:] != '(x)')) # functions and special variables are excluded as they do not need casting as dolfinx constants
+        func_syms = set() # add free symbols containted
+        for f in band_model.post_processed_functions().values():
+            if isinstance(f,SymbolicFunction):
+                func_syms.update(f.expression.free_symbols)
         
+        func_syms.update(free_syms)
+        free_syms = tuple(func_syms)
         pos_syms= sympy.symbols('x,y,z')
         
         # parameter dict with all the symbols to assing and the corresponding 
@@ -283,7 +301,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         scalar_function_space = self.__make_function_space__(self.mesh(),self.independent_vars['function_class'],1) # interpolate the scalar functions as the same class as the trial and test functions
         for sym,func in new_param_dict.items():
             if sym.name[-3:] == '(x)':
-                
+                print('here')
                 if isinstance(func,sympy.Piecewise):
                     # we have to traverse through any sympy piecewise functions and convert them, since UFL stuff cannot handle regular comparison operators. 
                     # NB! There should'nt be any free symbols other than those contained in parameter_dict and constants as wells as x,y, and z in the piecewise expression.
@@ -296,7 +314,8 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                     # other functions are interpolated in the usual way
                     f = dolfinx.fem.Function(scalar_function_space)
                     f.name = sym.name
-                    f.interpolate(func)
+                    
+                    f.interpolate(lambda x: func(x*self.length_scale()))
                     new_param_dict[sym] = f 
         
         
@@ -309,7 +328,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         return new_param_dict
     @auto_update
     def ufl_form(self):
-        
+        LOGGER.debug('computing ufl_form')
         is_scalar_problem = self.independent_vars['band_model'].tensor_shape == (1,1)
         
         import sympy
@@ -329,7 +348,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
 
             
             
-            numerical_tensor = sympy.lambdify(new_param_dict.keys(),tensor,dummify=True)(*new_param_dict.values())
+            numerical_tensor = sympy.lambdify(new_param_dict.keys(),tensor,dummify=True,modules=[{'conjugate':fenics_conjugate},'numpy'])(*new_param_dict.values())
             scaling = new_param_dict['__energy_scale__']*np.complex128(self.length_scale()**rank)
             normalized_tensor = np.asarray(np.asarray(numerical_tensor)/scaling)#.astype(np.complex128)
             
@@ -445,7 +464,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         """
 
         
-        
+        LOGGER.debug('gathering bilinear_form')
         constants_dict = self.dolfinx_constants()
         
         # update the value of the constants based on the values stored in the band_model parameter_dict and constants dict:
@@ -458,8 +477,10 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
             elif k == '__energy_scale__':
                 const.value = np.complex128(self.energy_scale())
             else:
-                const.value = np.complex128(numbers_dict[k])
-        
+                try:
+                    const.value = np.complex128(numbers_dict[k])
+                except KeyError as err:
+                    raise KeyError(f'key {k} in dolfinx_constants() was not found in neither the parameter_dict nor the constants dict of the band_model.') from err
         #we can now assemble the form  
         assembled_form = dolfinx.fem.form(self.ufl_form())
             
@@ -536,7 +557,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
 
         
         
-        LOGGER.debug(f'assembling array with parameters: {self.independent_vars["band_model"].independent_vars["parameter_dict"]}')
+        LOGGER.debug(f'assembling array ")#with parameters: {self.independent_vars["band_model"].independent_vars["parameter_dict"]}')
 
         A = dolfinx.fem.petsc.assemble_matrix(self.bilinear_form(),self.dolfin_bc())#diagonal=1234e10)
         A.assemble()
@@ -695,6 +716,13 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
             operator = sympy.Array(operator)
         return FEniCsObservable(operator,self)
 
+    
+    def solution_shape(self):
+        band_model_shape = self.band_model.tensor_shape
+        x_shape = (self.mesh().geometry.x.shape[1],)
+        return band_model_shape[::2] + x_shape
+        
+    
 def make_function_space(domain,spatial_dim,function_class=('CG',1),shape=(1,),scale_factor=1):
     """
     Makes a function space over a domain.
@@ -791,7 +819,7 @@ class FEniCsObservable(AbstractObservable):
         
         # assemble expression and interpolate outcome
         result = dolfinx.fem.Function(self.envelope_model.function_space())
-        result.interpolate(self.linear_form)
+        result.interpolate(lambda x: self.linear_form(x*self.envelope_model.length_scale()))
         
         res_array = np.array(result.x.array)
         
@@ -801,10 +829,14 @@ class FEniCsObservable(AbstractObservable):
 
 
 
-# region ufl relation and piecewise functions
+# region ufl relation and piecewise functions and Constnat subclassing
+
+def fenics_conjugate(expr):
+    return ufl.conj(expr)
+
 
 __ufl_relations__ = {'==':ufl.eq, '>':ufl.gt, '>=':ufl.ge,
-                    '<': ufl.lt, '<=':ufl.le, '!=':ufl.ne,'conditional':ufl.conditional,'real':ufl.real}
+                    '<': ufl.lt, '<=':ufl.le, '!=':ufl.ne,'conditional':ufl.conditional,'real':ufl.real,'and':ufl.And,'or':ufl.Or,'not':ufl.Not}
 
 
 def is_piecewise(expression):
@@ -816,6 +848,9 @@ def is_piecewise(expression):
         return True
     else:
         return any(is_piecewise(arg) for arg in expression.args)
+
+
+
 
 
 def convert_piecewise(expression,relation_operators,variables):
@@ -844,75 +879,63 @@ def convert_piecewise(expression,relation_operators,variables):
              '<': '>=','>=': '<',
              'or': 'and', 'and': 'or'}
 
-    def determine_relation(condition):
-
-        if isinstance(condition, sympy.core.relational.Equality):
-            return '=='
-        elif isinstance(condition, sympy.core.relational.LessThan):
-            return '<='
-        elif isinstance(condition, sympy.core.relational.StrictLessThan):
-            return '<'
-        elif isinstance(condition, sympy.core.relational.GreaterThan):
-            return '>='
-        elif isinstance(condition, sympy.core.relational.StrictGreaterThan):
-            return '>'
-        elif isinstance(condition, sympy.core.relational.Unequality):
-            return '!='
-        elif isinstance(condition, sympy.Or):
-            return 'or'
-        elif isinstance(condition, sympy.And):
-            return 'and'
-        elif isinstance(condition,sympy.logic.boolalg.BooleanFalse):
-            return False
-        elif isinstance(condition,sympy.logic.boolalg.BooleanTrue):
-            return True
-        else:
-            raise NotImplementedError(f'non recognized relation: {type(condition)}')
-
-    def recursive_conditionals(conditions,final_value=0.0,negate=False):
-
+    def recursive_conditionals(conditions,final_value=0.0):
         if len(conditions) == 1:
             next_iter = final_value
         else:
-            next_iter = recursive_conditionals(conditions[1:],negate=negate,final_value=final_value)
+            next_iter = recursive_conditionals(conditions[1:],final_value=final_value)
 
         this_condition = conditions[0]
         condition_type = determine_relation(this_condition[1])
         if isinstance(condition_type,bool):
             if condition_type:
                 # return the function because this is always true
-                return sympy.lambdify(variables.keys(),this_condition[0],"numpy")(*variables.values())
+                return sympy.lambdify(variables.keys(),this_condition[0],"numpy",dummify=True)(*variables.values())
             else:
                 # just go down the chain because this condition will never be true
                 return next_iter
-        if negate:
-            condition_type = negations[condition_type]
-
-        if condition_type == 'and':
-            # and is just negation and or
-            negate = negate ^ True  # flip negation by performing xor
-            condition_type = 'or'
-
-        if condition_type == 'or':
-            # or is just nested conditionas with the same value:
-            split_conditions = [(this_condition[0],cond) for cond in this_condition[1].args] # split up into multiple conditions
-            return recursive_conditionals(split_conditions,final_value=next_iter,negate=negate)
-        else:
-            relation = relation_operators[condition_type] # cast relation as operator
-
-            # evaluate function and conditionals
-            function = expression_traversal_lambdify(this_condition[0])
-            left_conditional = expression_traversal_lambdify(this_condition[1].args[0])
-            right_conditional = expression_traversal_lambdify(this_condition[1].args[1])
-            return condition_func(relation(real_part(left_conditional),real_part(right_conditional)),function,next_iter)
 
 
+        # convert the condition 
+        converted_cond = convert_condition(this_condition[1],relation_operators)
+
+        # evaluate function and conditionals
+        function = expression_traversal_lambdify(this_condition[0])
+        return condition_func(converted_cond,function,next_iter)
+
+
+    def convert_condition(cond,conversion_dict):
+        condition_type = determine_relation(cond)
+        
+        if condition_type in ('and','or','not'):
+            # we also convert all the parts of ands and ors 
+            converted_parts = [convert_condition(c,conversion_dict) for c in cond.args]
+            
+            # combine them using the condition:
+            if condition_type == 'not':
+                assert len(converted_parts) == 1
+                return conversion_dict[condition_type](converted_parts[0])
+            
+            converted = conversion_dict[condition_type](converted_parts[0],converted_parts[1])
+            for c in converted_parts[2:]:
+                converted = conversion_dict[condition_type](converted,c)
+            return converted
+        # lambdify left and right conditions 
+        left_conditional = expression_traversal_lambdify(cond.args[0])
+        right_conditional = expression_traversal_lambdify(cond.args[1])
+        return conversion_dict[condition_type](real_part(left_conditional),real_part(right_conditional))
+        
+        
+            
     def expression_traversal_lambdify(expr):
         dummy_expr = expr.func
         if dummy_expr == sympy.Piecewise:
-            return recursive_conditionals(expr.args,negate=False,final_value=0.0)
+            return recursive_conditionals(expr.args,final_value=0.0)
         dummy_args = sympy.symbols('a0:%d'%len(expr.args))
 
+        if isinstance(expr,sympy.core.relational.Relational):
+            return convert_condition(expr,conversion_dict=relation_operators)
+        
         converted_args = []
         for arg in expr.args:
             if arg in variables.keys():
@@ -931,5 +954,39 @@ def convert_piecewise(expression,relation_operators,variables):
 
     result = expression_traversal_lambdify(expression)
     return result
+
+def determine_relation(condition):
+
+    if isinstance(condition, sympy.core.relational.Equality):
+        return '=='
+    elif isinstance(condition, sympy.core.relational.LessThan):
+        return '<='
+    elif isinstance(condition, sympy.core.relational.StrictLessThan):
+        return '<'
+    elif isinstance(condition, sympy.core.relational.GreaterThan):
+        return '>='
+    elif isinstance(condition, sympy.core.relational.StrictGreaterThan):
+        return '>'
+    elif isinstance(condition, sympy.core.relational.Unequality):
+        return '!='
+    elif isinstance(condition, sympy.Or):
+        return 'or'
+    elif isinstance(condition, sympy.And):
+        return 'and'
+    elif isinstance(condition,sympy.Not):
+        return 'not'
+    elif isinstance(condition,sympy.logic.boolalg.BooleanFalse):
+        return False
+    elif isinstance(condition,sympy.logic.boolalg.BooleanTrue):
+        return True
+    else:
+        raise NotImplementedError(f'non recognized relation: {type(condition)}')
+
+
+
+
+
+
+
 
 # endregion

@@ -151,7 +151,7 @@ class SymbolicFunction(Function):
             symbol = sympy.Symbol(symbol,commutative=False)
         if symbol.name[-3:] != '(x)':
             raise ValueError(f'symbol representing functio MUST end with `(x)`. Recieved {symbol} with name: {symbol.name}')
-        spatial_dependencies = [i for i in range(3) if not expression.is_constant((X,Y,Z)[i])]
+        spatial_dependencies = [i for i in range(3) if (X,Y,Z)[i] in expression.free_symbols]
         Function.__init__(self,symbol,spatial_dependencies,bool(len(spatial_dependencies)),**kwargs)
         self._expression_ = expression
     

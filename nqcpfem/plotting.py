@@ -14,6 +14,9 @@ def plot_eigenvector(eigenvector,function_space,color=None,scaling =True,length_
         :return:
         """
         from .fenics import FEniCsModel
+        
+        eigenvector = eigenvector.copy() # prevent overwriting the array
+        
         if isinstance(function_space,FEniCsModel):
             function_space = function_space.function_space()
         normalization = np.linalg.norm(eigenvector.reshape(-1,eigenvector.shape[-1]), axis=0) # flatten the spinor dims to one dim and normalize
@@ -77,11 +80,11 @@ def plot_function(func,function_space,rescale=True,length_scale=1,show_xy_plane=
     p = pyvista.Plotter()
     from .fenics import FEniCsModel
     if isinstance(function_space,FEniCsModel):
-        length_scale = function_space.length_scale
-        function_space=function_space.function_space #create function_space
+        length_scale = function_space.length_scale()
+        function_space=function_space.function_space() #create function_space
     topology, cell_types, x = dolfinx.plot.create_vtk_mesh(function_space)
     grid = pyvista.UnstructuredGrid(topology, cell_types, x)
-    vals = func(length_scale*x.T,sympify=False)
+    vals = func(length_scale*x.T)
     if rescale:
         vals = vals/np.max(np.abs(vals))
     grid["u"] = vals

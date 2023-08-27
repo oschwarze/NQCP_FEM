@@ -150,6 +150,13 @@ class PETScSolver(ModelSolver):
         'LM': SLEPc.EPS.Which.LARGEST_MAGNITUDE,
     }
 
+    
+    def create_initial_vector(self,vec):
+        pass
+        from petsc4py import PETSc
+        petsc_vec = PETSc.Vec().createWithArray(vec)
+        return petsc_vec
+        
 
     def solve(self,model,sparse=True):
         """
@@ -195,8 +202,18 @@ class PETScSolver(ModelSolver):
         eig_problem.setProblemType(SLEPc.EPS.ProblemType.GHEP) # hermitian eigenvalue problem
         eig_problem.setType(self.solver_kwargs.get('method',self.solver_methods['krylovschur'])) # set method for solving
         eig_problem.setOperators(petsc_A,petsc_S) # define matrices of the problem
-        eig_problem.solve()
 
+        if 'initial_guess' in self.solver_kwargs:
+            eig_problem.setInitialSpace(self.create_initial_vector(self.solver_kwargs['initial_guess']))
+        
+        
+        try:
+            eig_problem.solve()
+        except Exception as err:
+            if err.args == (71,):
+                raise Exception('This can occur when the magnitude of the array elements span many orders of magnitude. Check that all numerical values are correct') from err
+            else:
+                raise err
 
         vr, vi = petsc_A.createVecs()
 

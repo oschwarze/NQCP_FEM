@@ -281,12 +281,10 @@ def particle_projector(band_model):
     :param bm.ParticleHoleBandModel band_model: the band model which the eigenvectors belong to
     :return:
     """
-    relevant_axis = band_model.particle_hole_axis
+    relevant_axis =0
     axis_dim = band_model.tensor_shape[2*relevant_axis]
-    particle_dims = [d for d in range(axis_dim) if d not in band_model.hole_indices]
-    projector_arr = np.zeros((axis_dim,axis_dim),dtype='complex')
-    for pdim in particle_dims:
-        projector_arr[pdim,pdim] = 1
+
+    projector_arr = np.diag([1]*int(axis_dim/2)+[0]*int(axis_dim/2)).astype('complex')
 
     return Observable(projector_arr,relevant_axis)
 
@@ -297,7 +295,7 @@ def hole_projector(band_model):
     :param band_modeling.ParticleHoleBandModel band_model: the band model which the eigenvectors belong to
     :return:
     """
-    relevant_axis = band_model.particle_hole_axis
+    relevant_axis = 0
     axis_dim = band_model.tensor_shape[2 * relevant_axis]
     projector_arr = np.zeros((axis_dim, axis_dim), dtype='complex')
     for hdim in band_model.hole_indices:
@@ -349,7 +347,7 @@ def BdG_extended_observable(observable: Observable,band_model:bm.BandModel):
     :type band_model: bm.BandModel
     :return: an extended version of the input observable.
     """
-    tr_operator = band_model.__time_reversal_change_of_basis__
+    tr_operator = np.array(band_model.__time_reversal_change_of_basis__).astype('complex')
     if tr_operator is None:
         return observable
     else:
