@@ -202,14 +202,6 @@ class DotSCDot(System):
         self.envelope_model.band_model.parameter_dict[mu_L] = E0
         self.envelope_model.band_model.parameter_dict[mu_R] = E0
         
-        
-        # step 1: Determine spin_up U, and spin_down D, particle states and their energies Eu, Ed. (4 states)
-        equal_detuning_sol = solver.solve(self.envelope_model)
-        energy_delta = np.average(equal_detuning_sol[0][self.select_subspace((up_p_state,),equal_detuning_sol[1],2)])
-        
-        LOGGER.debug(f'setting energy delta = {energy_delta}')
-        
-        
         left,right,sc = self.__make_system_classes__()
         
         
@@ -241,8 +233,6 @@ class DotSCDot(System):
             return vals
             
         iterative_model_solver = CrossingsFinder(model_update,solver,evaluation_func,return_func=lambda x:x[0])
-        #set equal detuning sol as first guess since its prbably better than random.
-        iterative_model_solver.prev_result=equal_detuning_sol 
         
             
         T_sol = self.find_avoided_crossing(solver,(left_up,right_up),(mu_R,),{mu_R:parameter_range},iterative_solving=iterative_model_solver)
@@ -290,14 +280,14 @@ class DotSCDot(System):
         iterative_model_solver.return_func = lambda x:x[2]
         
         # step 5: determin Delta_ud by detuing around mL=E0 (fixed) and vary mR around mR=E0-2Eu (spin up particle left adn spin down anti-particle right)
-        self.envelope_model.band_model.parameter_dict[mu_R] = E0-2*energy_delta
+        self.envelope_model.band_model.parameter_dict[mu_R] = E0
         D_sol = self.find_avoided_crossing(solver,(left_up,right_h_down),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver)
         
         new_bounds = bounds_determining(iterative_model_solver.saved_results,3)
         iterative_model_solver.return_func = lambda x:x[3]
         
         # step 4: Determine Delta_uu by detuning around mL=E0 (fixed) and vary mR around mR=E0-2Eu (spin up particle left and anti-particle right)
-        self.envelope_model.band_model.parameter_dict[mu_R] = E0-2*energy_delta
+        self.envelope_model.band_model.parameter_dict[mu_R] = E0
         Dso_sol = self.find_avoided_crossing(solver,(left_up,right_h_up),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver)
         
         
