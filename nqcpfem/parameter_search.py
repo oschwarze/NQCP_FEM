@@ -3,10 +3,13 @@ from sklearn.model_selection import ParameterGrid
 from .solvers import ModelSolver
 import logging
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import minimize,minimize_scalar
 import pickle as pkl
 import os 
 
+
+from . import UNIT_CONVENTION
+E0 = 1/(UNIT_CONVENTION['J to eV']*100000) # unit_scale: 10muev
 from typing import Iterable
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
@@ -92,7 +95,7 @@ class ParameterSearch():
                 if (not skip_errors) or isinstance(err,NotLoadedError):
                     raise err
                 else:
-                    LOGGER.warn(err)
+                    LOGGER.warn(f'error occured:{err}')
                     self._results_.append(np.nan)
                 
     
@@ -377,52 +380,63 @@ def quadrant_parameter_set(parameter_names,E0,detuning_range,n_points,quadrant):
     return detuning_parameter_set(default_values,detuning_range,n_points,signature)
 
 
-class MinimizationSearch(ParameterSearch):
+
+class MinimizationSearch():
     __SCALING_CONSTANT__ = 100  # When normalizing parameters in the solver search they will be set to this
 
-    def __init__(self,solver, ef_construction_func,post_processing_func,default_values,parameter_bounds=None,**minization_kwargs):
+    def __init__(self,func,default_values,parameter_bounds,**minimization_kwargs):
         """
         Searches the parameter_space for where the post_processing function is minimized.
-        :param Solver solver:
-        :param Callable ef_construction_func: function taking either a float or a dict and returning a EFM for solving
-        :param post_processing_func: function taking outcome of a EFM solution and returning a float
-        :param minization_kwargs: arguments passed to the minization function (see scipy.optimize.minimize)
+        :param func: function to minimize
+        :param default_values: Dictionary containing parameters to alter and their default value (initial guess)
+        :param parameter_bounds: Dictionary with same keys ad default_values specifying the min and max range of each parameter
+        :param minimization_kwargs: Kwargs to pass to scipy.optimize.minimize
         """
-        super().__init__(solver,ef_construction_func,post_processing_func)
-        self.minimization_kwargs = minization_kwargs
-        if 'method' not in self.minimization_kwargs.keys():
-            self.minimization_kwargs['method'] = 'SLSQP' # default minimization method
+        self.minimization_kwargs = minimization_kwargs
         self.default_param_values = default_values
 
-        if isinstance(parameter_bounds,float):
-            parameter_bounds = [(-1*parameter_bounds,parameter_bounds)]
+        
+        self.is_scalar =  len(self.default_param_values) == 1
+        if 'method' not in self.minimization_kwargs.keys():
+            if self.is_scalar:
+                self.minimization_kwargs['method'] = 'bounded'
+            else:
+                self.minimization_kwargs['method'] = 'SLSQP' # default minimization method
+
+        
+        
+        
+        
+
+        self.func = func
 
         self.parameter_bounds = parameter_bounds
 
         # define a specific key ordering which specifies how to convert the tuple x in the optimization function to
+        self.key_ordering = tuple(self.default_param_values.keys())
         # the keyword parameter_set
         self.minimization_func = None
-        self.normalized_bounds = []
-        if isinstance(self.default_param_values, dict):
-            self.__key_ordering__ = self.default_param_values.keys()
-            self.param_normalization = {}
-            for i,(k,v) in self.default_param_values.items():
-                norm = v if not np.isclose(v,0)/MinimizationSearch.__SCALING_CONSTANT__ else np.abs(parameter_bounds[i][0])/MinimizationSearch.__SCALING_CONSTANT__
-                self.param_normalization[k] = norm
-                self.normalized_bounds.append((self.parameter_bounds[i][0]/norm,self.parameter_bounds[i][1]/norm))
+        self.param_normalization = {}
+        for k,v in self.default_param_values.items():
+            try:
+                bound = parameter_bounds[k]
+                scale = (bound[1]-bound[0])/(2*MinimizationSearch.__SCALING_CONSTANT__)
+                shift = (bound[0]+bound[1])/2 + v 
+                self.param_normalization[k] = (scale,shift)
+                
+                
+            except TypeError as err:
+                raise TypeError(f'unable to set norm for parameter {k} with default value {k} and bounds {self.parameter_bounds[k]}') from err
 
-        else:
-            self.__key_ordering__ = None
-            self.param_normalization = self.default_param_values if not np.isclose(self.default_param_values,0) else np.abs(self.parameter_bounds[0][0])/MinimizationSearch.__SCALING_CONSTANT__
+        self.minimum=None
 
-            self.normalized_bounds.append((self.parameter_bounds[0][0] / self.param_normalization, self.parameter_bounds[0][1] / self.param_normalization))
-
-    def __make_optimization_func__(gridsearch_self):
+    def __make_optimization_func__(self):
         """
         Constructs function which can be passed to scipy minimiztion function
         :return:
         """
 
+        """
         class optimization_runner():
             def __init__(self,input_scale,output_scale=None,):
                 self.input_scale = input_scale
@@ -465,50 +479,126 @@ class MinimizationSearch(ParameterSearch):
                     return_val = single_run(x)
 
                 return return_val
+        """
 
-        runner = optimization_runner(gridsearch_self.param_normalization)
-        if gridsearch_self.minimization_func is None:
-            gridsearch_self.minimization_func = runner
+        runner = MinimizationFuncWrap(self.func,self.param_normalization,ordering=self.key_ordering)
+        if self.minimization_func is None:
+            self.minimization_func = runner
         return runner
 
     def find_minimum(self,raise_on_fail=True):
+        if self.minimum is not None:
+            return self.minimum
 
+        #convert everython to what scipy wants
+        bounds = tuple([(-100,100)]*len(self.key_ordering))
 
-        if self.parameter_bounds is not None:
-            if self.__key_ordering__:
-                bounds = tuple(self.normalized_bounds[k] for k in self.__key_ordering__)
-            else:
-                bounds = self.normalized_bounds
-        else:
-            bounds = None
-
+        x0 =tuple([0]*len(self.key_ordering))
+        
         minimization_func = self.__make_optimization_func__()
 
-        LOGGER.info(f'starting minimization with\n x0:{self.__x0__()},\n bounds: {bounds}')
-        minimization = minimize(minimization_func,self.__x0__(),bounds=bounds,**self.minimization_kwargs)
-        LOGGER.debug(f'Minimization finished:\n {minimization}')
+        LOGGER.info(f'starting minimization with\n x0:{x0},\n bounds: {bounds}')
+        
+        
+        if self.is_scalar:
+            if 'xatol' not in self.minimization_kwargs:
+                self.minimization_kwargs['xatol'] = 0.1 # too small a tolerance is not justified given the resolution of the mesh. This means that we need ~2000 data points of the entire range to achieve the same accuracy
+
+            if 'disp' not in self.minimization_kwargs:
+                self.minimization_kwargs['disp'] = 3 # too small a tolerance is not justified given the resolution of the mesh. This means that we need ~2000 data points of the entire range to achieve the same accuracy
+            kwargs = self.minimization_kwargs.copy()
+            method = self.minimization_kwargs['method']
+            del kwargs['method']
+            minimization = minimize_scalar(minimization_func,bounds=bounds[0],method=method,options=kwargs)
+
+        else:
+            minimization = minimize(minimization_func,x0,bounds=bounds,**self.minimization_kwargs)
+            LOGGER.debug(f'Minimization finished:\n {minimization}')
 
         # convert outcome to paramdict
         if not minimization.success and raise_on_fail:
             raise Exception(f'minization did not converge')
         final_val = minimization.fun*minimization_func.output_scale
-        if self.__key_ordering__:
-            final_x = {k:xx*minimization_func.gridsearch_instance.param_normalization[k] for k,xx in zip(minimization_func.gridsearch_instance.__key_ordering__,minimization.x)}
-        else:
-            final_x = minimization.x*self.param_normalization
+        if self.is_scalar:
+            minimization.x = (minimization.x,)
+        final_x = {k:xx*self.param_normalization[k][0] + self.param_normalization[k][1] for k,xx in zip(self.key_ordering,minimization.x)}
 
 
         minimization.update(x=final_x,fun=final_val)
         LOGGER.info(f'minimization successful with final value:\n {final_val}\n achieved for arguments:\n {final_x}')
+        self.minimum= minimization
+        self.func_wrap = minimization_func
         return minimization
-
-
-    def __x0__(self):
-
-
-        if self.__key_ordering__:
-            x0 = tuple(self.default_param_values[k] / self.param_normalization[k] for k in self.__key_ordering__)
+    
+    
+class MinimizationFuncWrap():
+    def __init__(self,func,input_scale,output_scale=None,ordering=None):
+        """ This class wraps a function to make finding the minimium easier by scaling the input and output to more reasonable values (makes them order unity)"""
+        self.input_scale = input_scale
+        self.output_scale = output_scale 
+        self.first_run = None # save the first run
+        self.func =func
+        self.ordering = ordering if ordering is not None else tuple(self.input_scale.keys())
+        self.results_log = []
+    
+    def __call__(self,x):
+        # sometimes x is an array meaninig we have to run it for each x_value
+        if isinstance(x,Iterable):
+            return_val = [self.single_run(xx) for xx in x]
         else:
-            x0 = self.default_param_values / self.param_normalization
+            return_val = self.single_run(x)
+        return return_val
+    
+    def single_run(self,x):
+        # cast x as dict:
+        from . import UNIT_CONVENTION
+        E0 = 1/(UNIT_CONVENTION['J to eV']*100000) # unit_scale: 10muev
+        if isinstance(x,float):
+            scaling = self.input_scale[self.ordering[0]]
+            x_dict = {self.ordering[0]:x*scaling[0] + scaling[1]}
+        else:
+            x_dict = {k:xx*self.input_scale[k][0] + self.input_scale[k][1] for k,xx in zip(self.ordering,x)}
+        p = {k:v/E0 for k,v in x_dict.items()}
+        LOGGER.debug(f'evaluating function with x={p}')
+        result = self.func(x_dict) 
+        
+        if self.first_run is None:
+            self.first_run = (x,result)
+        
+        if self.output_scale is None:
+            self.output_scale = result/100 
+        
+        normalized_result = result / self.output_scale
+        LOGGER.debug(f'result: {normalized_result}')
+        self.results_log.append((x_dict,result))
+        
+        return normalized_result
+    
 
-        return x0
+
+
+from typing import Callable
+class IterativeModelSolver():
+    def __init__(self,construction_func:Callable,solver:ModelSolver,evaluation_func:None|Callable=None,start_from_prev =True):
+        self.construction_func = construction_func
+        self.solver = solver
+        self.evaluation_func = evaluation_func
+        self.prev_result = None
+        
+        
+    def __call__(self,*args,**kwargs):
+        
+        model = self.construction_func(*args,**kwargs)
+        
+        if self.prev_result is not None:
+            # make initial guess as linear combination of all the previous ones 
+            initial_vec = np.sum(self.prev_result[1],axis=0)
+            
+            self.solver.solver_kwargs['initial_guess'] = initial_vec
+            
+        res = self.solver.solve(model)
+        
+        self.prev_result=res
+        if self.evaluation_func is None:
+            return res
+        return self.evaluation_func(model,res)

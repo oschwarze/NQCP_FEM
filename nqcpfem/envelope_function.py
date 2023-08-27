@@ -24,7 +24,7 @@ class Domain():
         return self.__mesh_scale__
     
 class EnvelopeFunctionModel(UpdatableObject,ABC):
-    def __init__(self, band_model:BandModel,domain,**independent_vars):
+    def __int__(self, band_model:BandModel,domain=None,**independent_vars):
         """
         Model which is used to determine envelope function of som band model
         :param BandModel band_model: envelope_model discribing dispersion relation of system
@@ -86,6 +86,11 @@ class EnvelopeFunctionModel(UpdatableObject,ABC):
         #
         raise NotImplementedError
 
+    
+    @abstractmethod
+    def solution_shape(self):
+        raise NotImplementedError
+    
     @abstractmethod
     @auto_update
     def make_S_array(self):

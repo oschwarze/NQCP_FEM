@@ -1,3 +1,4 @@
+from locale import normalize
 from . import band_model as bm
 from . import envelope_function
 import numpy as np
@@ -52,12 +53,21 @@ class Observable(np.ndarray):
         return l_vector_indices,tensor_indices,r_vector_indices
 
     def mel(self, vector, other_vector=None):
+        # noramlize the vector:
+        vector_norm = np.linalg.norm(vector)
+        
         if other_vector is None:
             other_vector = vector
-
+            other_vector_norm = vector_norm
+        else:
+            other_vector_norm = np.linalg.norm(other_vector)
+            
+            
         l_vector_indices,tensor_indices,r_vector_indices = self._get_summation_indices_(vector.shape)
         expval = np.einsum(vector.conj(), l_vector_indices, self, tensor_indices, other_vector, r_vector_indices)
-
+        expval = expval/(vector_norm*other_vector_norm)
+        
+        
         if other_vector is vector: # expectation values of observables are always real
             return np.real(expval) 
         return expval # case for non-diagonal matrix elements
@@ -271,12 +281,10 @@ def particle_projector(band_model):
     :param bm.ParticleHoleBandModel band_model: the band model which the eigenvectors belong to
     :return:
     """
-    relevant_axis = band_model.particle_hole_axis
+    relevant_axis =0
     axis_dim = band_model.tensor_shape[2*relevant_axis]
-    particle_dims = [d for d in range(axis_dim) if d not in band_model.hole_indices]
-    projector_arr = np.zeros((axis_dim,axis_dim),dtype='complex')
-    for pdim in particle_dims:
-        projector_arr[pdim,pdim] = 1
+
+    projector_arr = np.diag([1]*int(axis_dim/2)+[0]*int(axis_dim/2)).astype('complex')
 
     return Observable(projector_arr,relevant_axis)
 
@@ -287,7 +295,7 @@ def hole_projector(band_model):
     :param band_modeling.ParticleHoleBandModel band_model: the band model which the eigenvectors belong to
     :return:
     """
-    relevant_axis = band_model.particle_hole_axis
+    relevant_axis = 0
     axis_dim = band_model.tensor_shape[2 * relevant_axis]
     projector_arr = np.zeros((axis_dim, axis_dim), dtype='complex')
     for hdim in band_model.hole_indices:
@@ -339,7 +347,7 @@ def BdG_extended_observable(observable: Observable,band_model:bm.BandModel):
     :type band_model: bm.BandModel
     :return: an extended version of the input observable.
     """
-    tr_operator = band_model.__time_reversal_change_of_basis__
+    tr_operator = np.array(band_model.__time_reversal_change_of_basis__).astype('complex')
     if tr_operator is None:
         return observable
     else:
