@@ -202,7 +202,11 @@ class DotSCDot(System):
         self.envelope_model.band_model.parameter_dict[mu_L] = E0
         self.envelope_model.band_model.parameter_dict[mu_R] = E0
         
+<<<<<<< HEAD
         left,right,sc = self.__make_system_classes__()
+=======
+        
+>>>>>>> 5f5529c2432c8138eb4e469ba42585498fac03f2
         
         
         # step 2: Determine Tuu by detuning around mL = mR with s(pick spin up lef and spin up right stateClasses)
