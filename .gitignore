@@ -53,3 +53,7 @@ docs/_build/
 # experimental saves  and results
 *.save
 *.png
+
+
+#slurm studd
+slurm/*
