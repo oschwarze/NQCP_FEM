@@ -205,7 +205,6 @@ class DotSCDot(System):
         left,right,sc = self.__make_system_classes__()
         
         
-        
         # step 2: Determine Tuu by detuning around mL = mR with s(pick spin up lef and spin up right stateClasses)
         left_up = left.combine_state_cls(up_p_state,'left up particle')
         right_up = right.combine_state_cls(up_p_state,'right up particle')
