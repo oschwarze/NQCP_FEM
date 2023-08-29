@@ -383,7 +383,7 @@ class BandModel(UpdatableObject):
         if unspecified:
             raise ValueError(f'the following values have not been specified so the model cannot be cast as a numerical array:\n {unspecified}')
         
-        LOGGER.debug(f'building numerical array with var_dict: \n{var_dict}')
+        LOGGER.debug(f'building numerical array')
         
         # we have to dummify ourselves, because dummies created in lambdify are commutative which we don't want
         #dummy_map = dummify_non_commutative(self.post_processed_array())

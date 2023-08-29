@@ -171,7 +171,7 @@ class DotSCDot(System):
         
     
     
-    def determine_all_couplings(self,spin_up_I,spin_down_I,solver,E0,parameter_range):
+    def determine_all_couplings(self,spin_up_I,spin_down_I,solver,E0,parameter_range,verbose_result=False):
         pass
         #make the Classes
         from . import PositionalState,DefiniteTensorComponent
@@ -229,19 +229,57 @@ class DotSCDot(System):
 
                 subspace_I = self.select_subspace(subsp,res[1],2,x_points=X_arr)
                 vals.append(np.abs(res[0][subspace_I[0]]-res[0][subspace_I[1]]))
+
+            other = res if verbose_result else None
+                
+            return (vals,other)
             
-            return vals
-            
-        iterative_model_solver = CrossingsFinder(model_update,solver,evaluation_func,return_func=lambda x:x[0])
+        iterative_model_solver = CrossingsFinder(model_update,solver,evaluation_func,return_func=lambda x:x)
         
+        # evaluate the model at the golden ratio points so that we can determine the initial brcaket
+        golden_mean = 0.5*(3-np.sqrt(5))
+        xL = parameter_range[0]+E0
+        xR = parameter_range[1]+E0
+        point_finder =lambda l,r: l+golden_mean*(r-l)
+        l0 = point_finder(xL,xR)
+        l1 = point_finder(l0,xR)
+        l2 = point_finder(l1,xR)
+        l3 = point_finder(xL,l1)
+        
+        bracket_sols = [iterative_model_solver({mu_R:l}) for l in (l0,l1,l2,l3)]
+        
+        
+        def bracket_finder(i):
+            ls = np.array([l0,l1,l2,l3])
             
-        T_sol = self.find_avoided_crossing(solver,(left_up,right_up),(mu_R,),{mu_R:parameter_range},iterative_solving=iterative_model_solver)
+            fu = np.array([f[0][i] for f in bracket_sols])[np.argsort(ls)]
+            ls = np.sort(ls)
+            
+            # there are only 4 possibilities 
+            if  fu[1]<fu[2]and fu[1]<fu[0]:
+                return ((ls[0],ls[1],ls[2]),(fu[0],fu[1],fu[2]))
+            if  fu[1]<fu[3]and fu[1]<fu[0]:
+                return ((ls[0],ls[1],ls[3]),(fu[0],fu[1],fu[3]))
+            if  fu[2]<fu[3]and fu[2]<fu[0]:
+                return ((ls[0],ls[2],ls[3]),(fu[0],fu[2],fu[3]))
+            if  fu[2]<fu[3]and fu[2]<fu[1]:
+                return ((ls[1],ls[2],ls[3]),(fu[1],fu[2],fu[3]))
+        
+        
+        bracket = bracket_finder(0)
+        LOGGER.debug(f'T bracket: {bracket}')
+        iterative_model_solver.return_func = lambda x:x[0][0]
+        LOGGER.info('finding T:')
+        T_sol = self.find_avoided_crossing(solver,(left_up,right_up),(mu_R,),{mu_R:parameter_range},iterative_solving=iterative_model_solver,bracket=bracket)
         
         
         #use the previous results to determine the bounds for the next one
         def bounds_determining(results,res_i):
+            return parameter_range # workaround
             if len(results)<3:
                 return parameter_range #we do not have enough info to go with
+            
+            results = [r[:-1] for r in results]
                 
             x_vals = np.array([r[0][0][mu_R] for r in results])
             y_vals = np.array([r[-1][res_i] for r in results])
@@ -269,30 +307,42 @@ class DotSCDot(System):
             return min_x_vals - E0 # substract to get bounds relative to E0
         
         new_bounds = bounds_determining(iterative_model_solver.saved_results,1)
-        print(new_bounds)
-        iterative_model_solver.return_func = lambda x:x[1]
+        bracket = bracket_finder(1)
+        LOGGER.debug(f'T_so bracket: {bracket}')
+        iterative_model_solver.return_func = lambda x:x[0][1]
         
         # step 3: Determine Tud by etuning around mL = mR with symmetric detuning (pick spin_up left and spin down right)
         self.envelope_model.band_model.parameter_dict[mu_R] = E0
-        Tso_sol = self.find_avoided_crossing(solver,(left_up,right_down),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver)
+
+        LOGGER.info('finding T_so')       
+        Tso_sol = self.find_avoided_crossing(solver,(left_up,right_down),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver,bracket=bracket)
         
         new_bounds = bounds_determining(iterative_model_solver.saved_results,2)
-        iterative_model_solver.return_func = lambda x:x[2]
+        iterative_model_solver.return_func = lambda x:x[0][2]
+        bracket = bracket_finder(2)
+        LOGGER.debug(f'D bracket: {bracket}')
         
         # step 5: determin Delta_ud by detuing around mL=E0 (fixed) and vary mR around mR=E0-2Eu (spin up particle left adn spin down anti-particle right)
         self.envelope_model.band_model.parameter_dict[mu_R] = E0
-        D_sol = self.find_avoided_crossing(solver,(left_up,right_h_down),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver)
+        
+        LOGGER.info('finding D')       
+        D_sol = self.find_avoided_crossing(solver,(left_up,right_h_down),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver,bracket=bracket)
         
         new_bounds = bounds_determining(iterative_model_solver.saved_results,3)
-        iterative_model_solver.return_func = lambda x:x[3]
+        iterative_model_solver.return_func = lambda x:x[0][3]
+        bracket = bracket_finder(3)
+        LOGGER.debug(f'D_so bracket: {bracket}')
         
         # step 4: Determine Delta_uu by detuning around mL=E0 (fixed) and vary mR around mR=E0-2Eu (spin up particle left and anti-particle right)
         self.envelope_model.band_model.parameter_dict[mu_R] = E0
-        Dso_sol = self.find_avoided_crossing(solver,(left_up,right_h_up),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver)
+        LOGGER.info('finding D_so')       
+        Dso_sol = self.find_avoided_crossing(solver,(left_up,right_h_up),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver,bracket=bracket)
         
         
-        
-        return T_sol, Tso_sol,D_sol,Dso_sol
+        return_tup =  T_sol, Tso_sol,D_sol,Dso_sol
+        if verbose_result:
+            return return_tup + (iterative_model_solver.saved_results,)
+        return return_tup
         #return
 
 
