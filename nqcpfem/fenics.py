@@ -482,7 +482,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 except KeyError as err:
                     raise KeyError(f'key {k} in dolfinx_constants() was not found in neither the parameter_dict nor the constants dict of the band_model.') from err
         #we can now assemble the form  
-        assembled_form = dolfinx.fem.form(self.ufl_form(),jit_params={'timeout':20})
+        assembled_form = dolfinx.fem.form(self.ufl_form(),jit_options={'timeout':20})
             
         return assembled_form
         """

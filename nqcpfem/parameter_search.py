@@ -1,4 +1,5 @@
 import pandas as pd
+import pandas as pd
 from sklearn.model_selection import ParameterGrid
 from .solvers import ModelSolver
 import logging
@@ -57,7 +58,7 @@ class ParameterSearch():
     
     def __getstate__(self):
         state = self.__dict__.copy()
-        state['evaluation_function']= self.__raise_not_loaded__
+        #state['evaluation_function']= self.__raise_not_loaded__
         return state
     
     @property
@@ -111,24 +112,28 @@ class MPParameterSearch(ParameterSearch):
         import multiprocessing as mp
         
         
-        def run_func(param_set):
-            param_set = self._param_set_preprocessing_(param_set)
-
-            try:
-                result = self.evaluation_function(*param_set[0],**param_set[1])
-                print(f'result: {result}')    
-                return result
-            except Exception as err:
-                if not skip_errors:
-                    raise err
-                LOGGER.info(f'error occured: {err}')
-                return None 
+ 
         pool = mp.Pool(n_workers)
         
-        results = pool.map(run_func,self.parameter_sets)
+        results = pool.map(MPParameterSearch.run_func,((p,self,skip_errors) for p in self.parameter_sets))
         self._results_ = results
         if save_results:
             self.save(overwrite=True)
+    
+    @staticmethod
+    def run_func(args):#inst,param_set,skip_errors):
+        param_set,inst,skip_errors = args
+        param_set = inst._param_set_preprocessing_(param_set)
+
+        try:
+            result = inst.evaluation_function(*param_set[0],**param_set[1])
+            print(f'result: {result}')    
+            return result
+        except Exception as err:
+            if not skip_errors:
+                raise err
+            LOGGER.info(f'error occured: {err}')
+            return None
     
 class GridSearch(ParameterSearch):
     """
@@ -222,7 +227,6 @@ class GridSearchDB(GridSearch):
     the results are not put in directly but rather, functions applied to the results can be applied
     """
 
-    import pysos
     class DictDatabase():
         def __init__(self,filename):
             self.filename = filename
@@ -233,11 +237,13 @@ class GridSearchDB(GridSearch):
                 value = value.tolist()
             else:
                 value_type = str(type(value))
-
+            import pysos
             db=pysos.Dict(self.filename)
             db[key] = (value,value_type)
 
         def __getitem__(self, item):
+
+            import pysos
             db = pysos.Dict(self.filename)
             value,val_type = db[item]
             if val_type == 'np.ndarray':
@@ -245,16 +251,22 @@ class GridSearchDB(GridSearch):
             return value
 
         def __iter__(self):
+
+            import pysos
             db = pysos.Dict(self.filename)
             for k in db.keys():
                 yield k
 
         def items(self):
+
+            import pysos
             db = pysos.Dict(self.filename)
             for k in db.keys():
                 yield k,db[k]
 
         def keys(self):
+
+            import pysos
             return pysos.Dict(self.filename).keys()
 
     def __init__(self, parameter_grid, solver, ef_construction, evaluation_function,db_path):
