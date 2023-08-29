@@ -226,7 +226,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         # compute it from the numerical array instead
         arr = sympy.Array(self.band_model.numerical_array()).subs({k:-1j/self.length_scale() for k in self.band_model.momentum_symbols}).subs({x:0 for x in self.band_model.position_symbols})
         e= float(np.max(np.real(np.array(arr).astype('complex'))))
-        print(e)
+        return e #this is fast enough
         
         for R,T in self.band_model.numerical_tensor_repr().items():
             try:
@@ -482,7 +482,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 except KeyError as err:
                     raise KeyError(f'key {k} in dolfinx_constants() was not found in neither the parameter_dict nor the constants dict of the band_model.') from err
         #we can now assemble the form  
-        assembled_form = dolfinx.fem.form(self.ufl_form(),jit_options={'timeout':20})
+        assembled_form = dolfinx.fem.form(self.ufl_form(),jit_params={'timeout':20})
             
         return assembled_form
         """
@@ -557,7 +557,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
 
         
         
-        LOGGER.debug(f'assembling array ")#with parameters: {self.independent_vars["band_model"].independent_vars["parameter_dict"]}')
+        LOGGER.debug(f'assembling array') #with parameters: {self.independent_vars["band_model"].independent_vars["parameter_dict"]}')
 
         A = dolfinx.fem.petsc.assemble_matrix(self.bilinear_form(),self.dolfin_bc())#diagonal=1234e10)
         A.assemble()
