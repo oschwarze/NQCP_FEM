@@ -719,7 +719,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
     
     def solution_shape(self):
         band_model_shape = self.band_model.tensor_shape
-        x_shape = (self.mesh().geometry.x.shape[1],)
+        x_shape = (self.mesh().geometry.x.shape[0],)
         return band_model_shape[::2] + x_shape
         
     
@@ -794,11 +794,20 @@ class FEniCsObservable(AbstractObservable):
         if all(ss == 0 for ss in np.array(self.abstract_operator).ravel()):
             return 0 # trivial case, which breaks FEniCs
         
+        
+        
+        #handle cases where multiple vectors are passed 
+        if  vector.shape != self.envelope_model.solution_shape():
+            return np.array([self.mel(v,other_vector) for v in vector]) # loop over the passed vectors. This automatically also catches case where vec and other vec are both lists of vectors and returns an array of numbers
+        if other_vector is not None and other_vector.shape != self.envelope_model.solution_shape():
+            return np.array([self.mel(vector,vr) for vr in other_vector])
+        
         vector = self.envelope_model.flatten_eigentensors(vector)
         if other_vector is None:
             other_vector = vector
         else:
             other_vector =self.envelope_model.flatten_eigentensors(other_vector) 
+        
         
         # sign the numerical value of the functions in the array    
         self.left_v.x.array[:] = vector.flatten()
