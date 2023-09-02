@@ -237,6 +237,16 @@ class PETScSolver(ModelSolver):
 
         eigenvectors = model.eigensolutions_to_eigentensors(np.stack(eigenvectors,axis=1)) # cast into the eigentensor format
         eigenvalues = np.array(eigenvalues)
+        
+        petsc_A.destroy()
+        vr.destroy()
+        vi.destroy()
+        eig_problem.destroy()
+        if petsc_S is not None:
+            petsc_S.destroy()
+        if self.solver_kwargs.get('sigma',None) is not None:
+            spectral_transform.destroy()
+            
         return eigenvalues,eigenvectors
 
 

@@ -653,10 +653,11 @@ class IterativeModelSolver():
         self.solver = solver
         self.evaluation_func = evaluation_func
         self.prev_result = None
-        
+        self._i = 0
         
     def __call__(self,*args,**kwargs):
-        
+        self._i += 1
+        print(self._i)
         model = self.construction_func(*args,**kwargs)
         
         if self.prev_result is not None:
