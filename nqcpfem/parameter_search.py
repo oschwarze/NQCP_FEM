@@ -94,7 +94,6 @@ class ParameterSearch():
             param_set = self._param_set_preprocessing_(param_set)
             try:
                 result = self.evaluation_function(*param_set[0],**param_set[1])
-                print(f'result: {result}')    
                 self._results_.append(result)
                 if save_results: 
                     self.save(overwrite=True)
