@@ -16,6 +16,7 @@ LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
 
 
+
 class NotLoadedError(Exception):
     pass
 
@@ -111,28 +112,48 @@ class MPParameterSearch(ParameterSearch):
         import multiprocessing as mp
         
         
- 
-        pool = mp.Pool(n_workers)
-        
-        results = pool.map(MPParameterSearch.run_func,((p,self,skip_errors) for p in self.parameter_sets))
+
+        N =max(n_workers,len(self.parameter_sets)) 
+        LOGGER.debug(f'setting up Pool of {N} workers')
+        pool = mp.Pool(N)
+        LOGGER.info(f'running multiprocessing map of {len(self.parameter_sets)} parameter sets')
+        import os
+        base_dir = os.path.dirname(self.save_file)
+        if not len(base_dir):
+            base_dir = os.getcwd()
+        dir_name = base_dir + '/partial_results'
+        if not os.path.exists(dir_name) and save_results:
+            LOGGER.info(f'making results directorty:  {dir_name}')
+            os.mkdir(dir_name) # make sure that there exists a place for partial results 
+        results = pool.map(MPParameterSearch.run_func,((p,self,skip_errors,save_results,i) for i,p in enumerate(self.parameter_sets)))
         self._results_ = results
         if save_results:
             self.save(overwrite=True)
-    
+        pool.close()
     @staticmethod
     def run_func(args):#inst,param_set,skip_errors):
-        param_set,inst,skip_errors = args
+        param_set,inst,skip_errors,save_results,i = args
         param_set = inst._param_set_preprocessing_(param_set)
 
         try:
+            LOGGER.debug(f'running multiprocessing evaluation for element {i}')
             result = inst.evaluation_function(*param_set[0],**param_set[1])
             print(f'result: {result}')    
+            if save_results:
+                base_dir = os.path.dirname(inst.save_file)
+                if not len(base_dir):
+                    base_dir = os.getcwd()
+                dir_name = base_dir + '/partial_results/'
+                filename = dir_name+f'result_{i}_{inst.save_file}'
+                with open(filename,'wb') as f:
+                    pkl.dump(result,f)
             return result
         except Exception as err:
             if not skip_errors:
                 raise err
             LOGGER.info(f'error occured: {err}')
             return None
+
     
 class GridSearch(ParameterSearch):
     """

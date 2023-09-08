@@ -248,7 +248,8 @@ class DotSCDot(System):
         t_crossing_finder = CrossingFinder(iterative_model_solver,parameter_range,**crossing_finder_kwargs)
         
         T_sol = t_crossing_finder.minimize(verbose_res=True)
-        LOGGER.debug(f'T_found. \n N_iter = {len(T_sol.derivs)}')
+        LOGGER.debug(f'T_found. N_iter = {len(T_sol.derivs)}')
+
         
         
         #find T_so
@@ -264,7 +265,8 @@ class DotSCDot(System):
             lp,rp = points 
             Tso_sol = tso_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
         
-        LOGGER.debug(f'Tso_found. \n N_iter = {len(Tso_sol.derivs)-len(T_sol.derivs)}')
+        LOGGER.debug(f'Tso_found. N_iter = {len(Tso_sol.derivs)-len(T_sol.derivs)}')
+
         #find D
         LOGGER.info('finding D')
         iterative_model_solver.return_func = lambda x:x[0][2] #D number
@@ -278,7 +280,8 @@ class DotSCDot(System):
             lp,rp = points 
             D_sol = D_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
         
-        LOGGER.debug(f'D_found. \n N_iter = {len(D_sol.derivs)-len(Tso_sol.derivs)}')
+        LOGGER.debug(f'D_found. N_iter = {len(D_sol.derivs)-len(Tso_sol.derivs)}')
+
         #find D_so
         
         LOGGER.info('finding D_so')
@@ -293,13 +296,34 @@ class DotSCDot(System):
             lp,rp = points 
             Dso_sol=Dso_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
         
-        LOGGER.debug(f'Dso_found. \n N_iter = {len(Dso_sol.derivs)-len(D_sol.derivs)}')
+
+        LOGGER.debug(f'Dso_found. N_iter = {len(Dso_sol.derivs)-len(D_sol.derivs)}')
 
         LOGGER.info(f'total number of function calls: {len(iterative_model_solver.saved_results)}')
         
         return T_sol,Tso_sol,D_sol,Dso_sol
 
         """
+        # evaluate the model at the golden ratio points so that we can determine the initial brcaket
+        golden_mean = 0.5*(3-np.sqrt(5))
+        xL = parameter_range[0]+E0
+        xR = parameter_range[1]+E0
+        point_finder =lambda l,r: l+golden_mean*(r-l)
+        l0 = point_finder(xL,xR)
+        l1 = point_finder(l0,xR)
+        l2 = point_finder(l1,xR)
+        l3 = point_finder(xL,l1)
+        
+        bracket_sols = [iterative_model_solver({mu_R:l}) for l in (l0,l1,l2,l3)]
+        
+        
+        def bracket_finder(i):
+            ls = np.array([l0,l1,l2,l3])
+
+        
+        return T_sol,Tso_sol,D_sol,Dso_sol
+
+        
         # evaluate the model at the golden ratio points so that we can determine the initial brcaket
         golden_mean = 0.5*(3-np.sqrt(5))
         xL = parameter_range[0]+E0
@@ -348,7 +372,7 @@ class DotSCDot(System):
             x_vals = np.array([r[0][0][mu_R] for r in results])
             y_vals = np.array([r[-1][res_i] for r in results])
             #find the smallest two y_vals and return the corresponding x_vals
-            print(x_vals,y_vals)
+            LOGGER.debug(x_vals,y_vals)
             
             
             sorted_x_vals = x_vals[np.argsort(y_vals)] 
@@ -430,7 +454,8 @@ from collections import namedtuple
 Result = namedtuple('Result',['x','f','xvals','fvals','derivs'])
 
 class CrossingFinder():
-    def __init__(self,func,x_range,deriv_step_factor=1e-3,deriv_tol=0.99,max_iter=18,x_tol=1e-3):
+    def __init__(self,func,x_range,deriv_step_factor=1e-3,deriv_tol=1,max_iter=18,x_tol=1e-3):
+
         self.func = func
         self.x_range = x_range
         self.deriv_step_factor = deriv_step_factor
@@ -489,8 +514,28 @@ class CrossingFinder():
         x = (xR+xL)/2
         while i<self.max_iter:
             i+=1
+            LOGGER.debug((i,xR,xL))
             x_old = x
             x = (fL-fR +xL+xR)/2
+            # if outside interval: reflect it into the interval
+            
+            if x<xL:
+                LOGGER.debug(f'reflect around xL: {x,2*(xL-x)}')
+                x = x + 2*(xL-x)
+            if x>xR:
+                LOGGER.debug(f'reflect around xR: {x,-2*(x-xR)}')
+                x = x - 2*(x-xR)
+            
+            # if too close to the edge: move it further in
+            if np.isclose(x,xL,atol=10*self.deriv_step):
+                LOGGER.debug(f'shift right: {x,10*self.deriv_step}')
+                x += 10*self.deriv_step
+            if np.isclose(x,xR,atol=10*self.deriv_step):
+                LOGGER.debug(f'shift left: {x,-10*self.deriv_step}')
+                x += -10*self.deriv_step
+            
+            # if it is still too close, outside or interval is too small. We do the alternative point distinguising
+
             if x<xL or x>xR or any(np.isclose(x,[xL,xR],atol=10*self.deriv_step)) or np.abs(xR-xL)<2*self.x_tol*(self.x_range[1]-self.x_range[0]):
                 # we get here if: linear intersection guess moves us further away, is too close to previous points, or search interval is already small
                 # find the closest of xL and xR and move 10*self.deriv_step towards the center
@@ -503,18 +548,14 @@ class CrossingFinder():
                 sigma = left_deriv+right_deriv
                 # delta = 0 -> middle. delta = sigma -> right point. delta = -sigma left_point
 
-                if 10*self.deriv_step < np.abs(xL-xR)/2 and (any(print_tup) or any(np.isclose(x,[xL,xR],atol=10*self.deriv_step))):
-                    print('a')
-                    x = xL + 10*self.deriv_step if np.abs(x-xL) < np.abs(x-xR) else xR - 10*self.deriv_step
-                else:
-                    print('b')
-                    x= (0.5+delta/(2*sigma))*xR + (0.5-delta/(2*sigma))*xL  # shift delta according to the smallest derivative.
+                x_new= (0.5+delta/(2*sigma))*xR + (0.5-delta/(2*sigma))*xL  # shift delta according to the smallest derivative.
                 
-                print(i,(xR-xL)/(self.x_range[1]-self.x_range[0]),(x-xL)/(self.x_range[1]-self.x_range[0]),any(np.isclose(x,[xL,xR],atol=10*self.deriv_step)),print_tup,np.abs(xR-xL)<2*self.x_tol*(self.x_range[1]-self.x_range[0]))
+                LOGGER.debug(f'alternative:{x,x_new}. reason:{x<xL ,x>xR,np.isclose(x,[xL,xR],atol=10*self.deriv_step),np.abs(xR-xL)<2*self.x_tol*(self.x_range[1]-self.x_range[0])} ')
             
-            print((x-x_old)/(self.x_range[1]-self.x_range[0]))
+            LOGGER.debug(f'relative {(x-x_old)/(self.x_range[1]-self.x_range[0])}')
             deriv=self.derivative_check(x,return_derivs=True)
-            print(i,deriv,x)
+            LOGGER.debug(f'deriv: {(i,deriv,x)}')
+
             self.derivs.append((x,)+deriv[1:])
             direc = deriv[0]
             fx = deriv[1]
@@ -529,22 +570,25 @@ class CrossingFinder():
                     fR = fx
                 
             if (xR-xL)<self.x_tol*(self.x_range[1]-self.x_range[0]):
-                print(f'converged in {i} steps. Reason: x is within ({xL},{xR})')
+                LOGGER.debug(f'converged in {i} steps. Reason: x is within ({xL},{xR})')
                 break
             if direc == 0:
-                print(f'converged in {i} steps. Reason: valid local minimum.')
+                LOGGER.debug(f'converged in {i} steps. Reason: valid local minimum.')
+
                 break
             else:
                 #look at all derivs and pick the next guess
                 left,right = self.find_starting_points(self.derivs)
-                print(left,right)
+                LOGGER.debug((left,right))
+
                 xL,fL,dL = left[:3]
                 xR,fR,dR = right[:3]
                 
         if i<self.max_iter:
             return returner(x,fx)
         else:
-            print('did not converge')
+            LOGGER.debug('did not converge')
+
             return  returner(x,fx)
 
     def derivative_check(self,x0,f0=None,dfs=None,return_derivs=False):
@@ -573,7 +617,7 @@ class CrossingFinder():
             elif dfl>-self.deriv_tol and dfr<self.deriv_tol:
                 return returner(0) # we converged
             else:
-                print('local maxima')
+                LOGGER.debug('local maxima')
                 return returner(None) # pick any i guess
 
     def find_starting_points(self,derivative_points,return_minimum=True):
@@ -583,7 +627,8 @@ class CrossingFinder():
         right_points = []
         for point in derivative_points:
             grad = self.derivative_check(*point)[0]
-            print(*point,grad)
+            LOGGER.debug((point,grad))
+
             if grad is None:
                 continue # skip local maxima
             if grad > 0: # go to right i.e. this point is to the left:
@@ -591,7 +636,8 @@ class CrossingFinder():
             elif grad < 0:
                 right_points.append(point)
             elif return_minimum:
-                print('minimum_found')
+                LOGGER.debug('minimum_found')
+
                 return Result(point[0],point[1],[],[],self.derivs)
         
         
@@ -622,9 +668,9 @@ class CrossingFinder():
         else:
             new = CrossingFinder(new_func,(x_vals[xLi][0],x_vals[xRi][0]),deriv_step_factor = deriv_step_factor,**finder_kwargs)
         # set bounds
-        print(new.x_range)
-        print(new.deriv_step_factor)
-        print(new.deriv_step)
+        LOGGER.debug(new.x_range)
+        LOGGER.debug(new.deriv_step_factor)
+        LOGGER.debug(new.deriv_step)
         
         new._fL_bound = new_values[xLi]
         new._fR_bound = new_values[xRi]
@@ -642,9 +688,10 @@ class CrossingFinder():
             fr = new_values[np.where(x_vals==x+new.deriv_step)[0]][0]
             dfl = (f-fl)/new.deriv_step
             dfr = (fr-f)/new.deriv_step
-            print((x,f,(dfl,dfr)))
+
+            LOGGER.debug((x,f,(dfl,dfr)))
+
             new_points.append((x,f,(dfl,dfr)))
         new.derivs = new_points
         return new,new_points
-
 
