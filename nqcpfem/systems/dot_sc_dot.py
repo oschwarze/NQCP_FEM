@@ -12,7 +12,6 @@ from ..functions import SymbolicFunction,X,Y,Z
 import logging
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
-
 Dot = namedtuple('Dot',['x','omega_x','Omega_x','w_x','omega_y','Omega_y','w_y'])
 Barrier = namedtuple('Barrier',['length','V']) # barrier is always fixed to be at the end of the SC
 Superconductor = namedtuple('Superconductor',['Delta','length','width','V_in','V_out']) #superconductor center is always in the center
@@ -171,8 +170,8 @@ class DotSCDot(System):
         
     
     
-    def determine_all_couplings(self,spin_up_I,spin_down_I,solver,E0,parameter_range):
-        pass
+    def determine_all_couplings(self,spin_up_I,spin_down_I,solver,E0,parameter_range,verbose_result=False,**crossing_finder_kwargs):
+        #region class constuction
         #make the Classes
         from . import PositionalState,DefiniteTensorComponent
         mask_template = lambda x: np.zeros(self.envelope_model.solution_shape()[:-1])
@@ -213,9 +212,11 @@ class DotSCDot(System):
         
         right_h_down = right.combine_state_cls(down_h_state,'right down anit-particle')
         right_h_up = right.combine_state_cls(up_h_state,'right up anit-particle')
+        #endregion
         
-        
-        def model_update(params):
+        # region iterative_model_solver setup
+        def model_update(mu_R_val):
+            params = {mu_R:mu_R_val}
             self.envelope_model.band_model.parameter_dict.update(params)
             return self.envelope_model
         
@@ -229,10 +230,11 @@ class DotSCDot(System):
 
                 subspace_I = self.select_subspace(subsp,res[1],2,x_points=X_arr)
                 vals.append(np.abs(res[0][subspace_I[0]]-res[0][subspace_I[1]]))
+
+            other = res if verbose_result else None
+                
+            return (vals,res)
             
-<<<<<<< Updated upstream
-            return vals
-=======
         iterative_model_solver = IntermediateResSave(model_update,solver,evaluation_func,return_func=lambda x:x)
         #endregion
         
@@ -247,6 +249,7 @@ class DotSCDot(System):
         
         T_sol = t_crossing_finder.minimize(verbose_res=True)
         LOGGER.debug(f'T_found. N_iter = {len(T_sol.derivs)}')
+
         
         
         #find T_so
@@ -263,6 +266,7 @@ class DotSCDot(System):
             Tso_sol = tso_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
         
         LOGGER.debug(f'Tso_found. N_iter = {len(Tso_sol.derivs)-len(T_sol.derivs)}')
+
         #find D
         LOGGER.info('finding D')
         iterative_model_solver.return_func = lambda x:x[0][2] #D number
@@ -277,6 +281,7 @@ class DotSCDot(System):
             D_sol = D_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
         
         LOGGER.debug(f'D_found. N_iter = {len(D_sol.derivs)-len(Tso_sol.derivs)}')
+
         #find D_so
         
         LOGGER.info('finding D_so')
@@ -291,6 +296,7 @@ class DotSCDot(System):
             lp,rp = points 
             Dso_sol=Dso_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
         
+
         LOGGER.debug(f'Dso_found. N_iter = {len(Dso_sol.derivs)-len(D_sol.derivs)}')
 
         LOGGER.info(f'total number of function calls: {len(iterative_model_solver.saved_results)}')
@@ -313,18 +319,55 @@ class DotSCDot(System):
         
         def bracket_finder(i):
             ls = np.array([l0,l1,l2,l3])
->>>>>>> Stashed changes
-            
-        iterative_model_solver = CrossingsFinder(model_update,solver,evaluation_func,return_func=lambda x:x[0])
+
         
+        return T_sol,Tso_sol,D_sol,Dso_sol
+
+        
+        # evaluate the model at the golden ratio points so that we can determine the initial brcaket
+        golden_mean = 0.5*(3-np.sqrt(5))
+        xL = parameter_range[0]+E0
+        xR = parameter_range[1]+E0
+        point_finder =lambda l,r: l+golden_mean*(r-l)
+        l0 = point_finder(xL,xR)
+        l1 = point_finder(l0,xR)
+        l2 = point_finder(l1,xR)
+        l3 = point_finder(xL,l1)
+        
+        bracket_sols = [iterative_model_solver({mu_R:l}) for l in (l0,l1,l2,l3)]
+        
+        
+        def bracket_finder(i):
+            ls = np.array([l0,l1,l2,l3])
             
-        T_sol = self.find_avoided_crossing(solver,(left_up,right_up),(mu_R,),{mu_R:parameter_range},iterative_solving=iterative_model_solver)
+            fu = np.array([f[0][i] for f in bracket_sols])[np.argsort(ls)]
+            ls = np.sort(ls)
+            
+            # there are only 4 possibilities 
+            if  fu[1]<fu[2]and fu[1]<fu[0]:
+                return ((ls[0],ls[1],ls[2]),(fu[0],fu[1],fu[2]))
+            if  fu[1]<fu[3]and fu[1]<fu[0]:
+                return ((ls[0],ls[1],ls[3]),(fu[0],fu[1],fu[3]))
+            if  fu[2]<fu[3]and fu[2]<fu[0]:
+                return ((ls[0],ls[2],ls[3]),(fu[0],fu[2],fu[3]))
+            if  fu[2]<fu[3]and fu[2]<fu[1]:
+                return ((ls[1],ls[2],ls[3]),(fu[1],fu[2],fu[3]))
+        
+        
+        bracket = bracket_finder(0)
+        LOGGER.debug(f'T bracket: {bracket}')
+        iterative_model_solver.return_func = lambda x:x[0][0]
+        LOGGER.info('finding T:')
+        T_sol = self.find_avoided_crossing(solver,(left_up,right_up),(mu_R,),{mu_R:parameter_range},iterative_solving=iterative_model_solver,bracket=bracket)
         
         
         #use the previous results to determine the bounds for the next one
         def bounds_determining(results,res_i):
+            return parameter_range # workaround
             if len(results)<3:
                 return parameter_range #we do not have enough info to go with
+            
+            results = [r[:-1] for r in results]
                 
             x_vals = np.array([r[0][0][mu_R] for r in results])
             y_vals = np.array([r[-1][res_i] for r in results])
@@ -352,37 +395,50 @@ class DotSCDot(System):
             return min_x_vals - E0 # substract to get bounds relative to E0
         
         new_bounds = bounds_determining(iterative_model_solver.saved_results,1)
-        print(new_bounds)
-        iterative_model_solver.return_func = lambda x:x[1]
+        bracket = bracket_finder(1)
+        LOGGER.debug(f'T_so bracket: {bracket}')
+        iterative_model_solver.return_func = lambda x:x[0][1]
         
         # step 3: Determine Tud by etuning around mL = mR with symmetric detuning (pick spin_up left and spin down right)
         self.envelope_model.band_model.parameter_dict[mu_R] = E0
-        Tso_sol = self.find_avoided_crossing(solver,(left_up,right_down),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver)
+
+        LOGGER.info('finding T_so')       
+        Tso_sol = self.find_avoided_crossing(solver,(left_up,right_down),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver,bracket=bracket)
         
         new_bounds = bounds_determining(iterative_model_solver.saved_results,2)
-        iterative_model_solver.return_func = lambda x:x[2]
+        iterative_model_solver.return_func = lambda x:x[0][2]
+        bracket = bracket_finder(2)
+        LOGGER.debug(f'D bracket: {bracket}')
         
         # step 5: determin Delta_ud by detuing around mL=E0 (fixed) and vary mR around mR=E0-2Eu (spin up particle left adn spin down anti-particle right)
         self.envelope_model.band_model.parameter_dict[mu_R] = E0
-        D_sol = self.find_avoided_crossing(solver,(left_up,right_h_down),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver)
+        
+        LOGGER.info('finding D')       
+        D_sol = self.find_avoided_crossing(solver,(left_up,right_h_down),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver,bracket=bracket)
         
         new_bounds = bounds_determining(iterative_model_solver.saved_results,3)
-        iterative_model_solver.return_func = lambda x:x[3]
+        iterative_model_solver.return_func = lambda x:x[0][3]
+        bracket = bracket_finder(3)
+        LOGGER.debug(f'D_so bracket: {bracket}')
         
         # step 4: Determine Delta_uu by detuning around mL=E0 (fixed) and vary mR around mR=E0-2Eu (spin up particle left and anti-particle right)
         self.envelope_model.band_model.parameter_dict[mu_R] = E0
-        Dso_sol = self.find_avoided_crossing(solver,(left_up,right_h_up),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver)
+        LOGGER.info('finding D_so')       
+        Dso_sol = self.find_avoided_crossing(solver,(left_up,right_h_up),(mu_R,),{mu_R:new_bounds},iterative_solving=iterative_model_solver,bracket=bracket)
         
         
-        
-        return T_sol, Tso_sol,D_sol,Dso_sol
+        return_tup =  T_sol, Tso_sol,D_sol,Dso_sol
+        if verbose_result:
+            return return_tup + (iterative_model_solver.saved_results,)
+        return return_tup
+        """
         #return
 
 
 
 from nqcpfem.parameter_search import IterativeModelSolver
 from typing import Any
-class CrossingsFinder(IterativeModelSolver):
+class IntermediateResSave(IterativeModelSolver):
     def __init__(self, construction_func: Callable[..., Any], solver: ModelSolver, evaluation_func: Callable[..., Any] | None = None, start_from_prev=True,return_func=None):
         super().__init__(construction_func, solver, evaluation_func, start_from_prev)
         self.return_func =return_func
@@ -393,16 +449,13 @@ class CrossingsFinder(IterativeModelSolver):
         return self.return_func(res)
     
 
-<<<<<<< Updated upstream
-# region state Classes
-#endregion
-=======
 
 from collections import namedtuple
 Result = namedtuple('Result',['x','f','xvals','fvals','derivs'])
 
 class CrossingFinder():
     def __init__(self,func,x_range,deriv_step_factor=1e-3,deriv_tol=1,max_iter=18,x_tol=1e-3):
+
         self.func = func
         self.x_range = x_range
         self.deriv_step_factor = deriv_step_factor
@@ -482,8 +535,7 @@ class CrossingFinder():
                 x += -10*self.deriv_step
             
             # if it is still too close, outside or interval is too small. We do the alternative point distinguising
-            
-            
+
             if x<xL or x>xR or any(np.isclose(x,[xL,xR],atol=10*self.deriv_step)) or np.abs(xR-xL)<2*self.x_tol*(self.x_range[1]-self.x_range[0]):
                 # we get here if: linear intersection guess moves us further away, is too close to previous points, or search interval is already small
                 # find the closest of xL and xR and move 10*self.deriv_step towards the center
@@ -495,6 +547,7 @@ class CrossingFinder():
                 delta = left_deriv-right_deriv
                 sigma = left_deriv+right_deriv
                 # delta = 0 -> middle. delta = sigma -> right point. delta = -sigma left_point
+
                 x_new= (0.5+delta/(2*sigma))*xR + (0.5-delta/(2*sigma))*xL  # shift delta according to the smallest derivative.
                 
                 LOGGER.debug(f'alternative:{x,x_new}. reason:{x<xL ,x>xR,np.isclose(x,[xL,xR],atol=10*self.deriv_step),np.abs(xR-xL)<2*self.x_tol*(self.x_range[1]-self.x_range[0])} ')
@@ -502,6 +555,7 @@ class CrossingFinder():
             LOGGER.debug(f'relative {(x-x_old)/(self.x_range[1]-self.x_range[0])}')
             deriv=self.derivative_check(x,return_derivs=True)
             LOGGER.debug(f'deriv: {(i,deriv,x)}')
+
             self.derivs.append((x,)+deriv[1:])
             direc = deriv[0]
             fx = deriv[1]
@@ -520,11 +574,13 @@ class CrossingFinder():
                 break
             if direc == 0:
                 LOGGER.debug(f'converged in {i} steps. Reason: valid local minimum.')
+
                 break
             else:
                 #look at all derivs and pick the next guess
                 left,right = self.find_starting_points(self.derivs)
                 LOGGER.debug((left,right))
+
                 xL,fL,dL = left[:3]
                 xR,fR,dR = right[:3]
                 
@@ -532,6 +588,7 @@ class CrossingFinder():
             return returner(x,fx)
         else:
             LOGGER.debug('did not converge')
+
             return  returner(x,fx)
 
     def derivative_check(self,x0,f0=None,dfs=None,return_derivs=False):
@@ -571,6 +628,7 @@ class CrossingFinder():
         for point in derivative_points:
             grad = self.derivative_check(*point)[0]
             LOGGER.debug((point,grad))
+
             if grad is None:
                 continue # skip local maxima
             if grad > 0: # go to right i.e. this point is to the left:
@@ -579,6 +637,7 @@ class CrossingFinder():
                 right_points.append(point)
             elif return_minimum:
                 LOGGER.debug('minimum_found')
+
                 return Result(point[0],point[1],[],[],self.derivs)
         
         
@@ -629,10 +688,10 @@ class CrossingFinder():
             fr = new_values[np.where(x_vals==x+new.deriv_step)[0]][0]
             dfl = (f-fl)/new.deriv_step
             dfr = (fr-f)/new.deriv_step
+
             LOGGER.debug((x,f,(dfl,dfr)))
+
             new_points.append((x,f,(dfl,dfr)))
         new.derivs = new_points
         return new,new_points
 
-
->>>>>>> Stashed changes

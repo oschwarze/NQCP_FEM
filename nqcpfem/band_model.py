@@ -383,7 +383,7 @@ class BandModel(UpdatableObject):
         if unspecified:
             raise ValueError(f'the following values have not been specified so the model cannot be cast as a numerical array:\n {unspecified}')
         
-        LOGGER.debug(f'building numerical array with var_dict: \n{var_dict}')
+        LOGGER.debug(f'building numerical array')
         
         # we have to dummify ourselves, because dummies created in lambdify are commutative which we don't want
         #dummy_map = dummify_non_commutative(self.post_processed_array())
@@ -1438,4 +1438,59 @@ def make_vector_field(B_field,position_symbols,gauge='symmetric'):
 
 #endregion
 
+
+
+
+
+
+#region band sorting
+def covariant_sorting(results,S=None,return_sorting_index = False):
+    # if the eigenvecs is an array of shape [n,m,...] then this functions returns an integer array of shape [n,m]
+    # which sorts the eigenvectors such that eigenvector of all eigenvectors in row (i-1), eigenvector [i,j] has the most overlap with eigenvector [i-1,j] 
+    
+    
+    
+    eigenvals,eigenvecs = results
+    n,m = eigenvecs.shape[0],eigenvecs.shape[1]
+    einsum_idx = list(range(2,len(eigenvecs.shape))) # [0,1] reserved for indxing overlaps array, and we only need n_shape -2 indices to index the relevant entries 
+    
+    def find_overlaps(vecs_0,vecs_1):
+        if S is None:
+            norms_0 = np.linalg.norm(vecs_0.reshape(vecs_0.shape[0],-1),axis=1)
+            norms_1 = np.linalg.norm(vecs_1.reshape(vecs_1.shape[0],-1),axis=1)
+            return np.abs(np.einsum(vecs_0,[0]+einsum_idx, 1/norms_0,[0] ,vecs_1.conj(),[1]+einsum_idx, 1/norms_1,[1],[0,1]))#     lv /norm(lv) * rv /norm(rv)
+        else:
+            return np.abs(S.mel(vecs_0,vecs_1))
+    
+    I = np.zeros((n,m))
+    # sort the first according to the eigenvals. shift by its index to the how much to 'move' the element instead of where to move it
+    I[0] = np.argsort(eigenvals[0]) - np.arange(m)
+    previous_set = eigenvecs[0]
+    
+    for i,evec_set in enumerate(eigenvecs[1:],1): #skip first
+        # compute overlap between every evec in the set and eigenvecs in previous set:
+        overlaps = find_overlaps(evec_set,previous_set) # output is m x m
+        l = np.argmax(overlaps,axis=1) # find which of the previous ones is best matching 
+        # shift l by index to get the relative difference between an elemes index in this set and an elements index in the previous set
+        # ad to it the relative shift of the previous set to get the relative shift wrt the array in 0
+        I[i] = l-np.arange(m) + I[i-1][np.argsort(l)] 
+        
+        previous_set = evec_set
+        # convert from relative index to absolute. First we shift from relative movement to absolute movement (shift and modulus) 
+        # and then we convert from the elements x=I[i,j] that tell that evec [i,j] goes to x, to element I[i,j] showing which evec[i,x] we want
+        
+    I=    np.argsort(np.mod(np.mod(I,3)+np.arange(m),3)).astype(int)
+
+    
+    if return_sorting_index:
+        return I        
+    
+    sorted_evals = np.take_along_axis(eigenvals,I,axis=1)
+    sorted_evecs = np.stack([a[i] for a,i in zip(eigenvecs,I)])
+    
+    
+    
+    return sorted_evals,sorted_evecs
+        
+#endregion
 

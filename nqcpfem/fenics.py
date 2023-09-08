@@ -226,7 +226,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         # compute it from the numerical array instead
         arr = sympy.Array(self.band_model.numerical_array()).subs({k:-1j/self.length_scale() for k in self.band_model.momentum_symbols}).subs({x:0 for x in self.band_model.position_symbols})
         e= float(np.max(np.real(np.array(arr).astype('complex'))))
-        print(e)
+        return e #this is fast enough
         
         for R,T in self.band_model.numerical_tensor_repr().items():
             try:
@@ -557,7 +557,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
 
         
         
-        LOGGER.debug(f'assembling array ")#with parameters: {self.independent_vars["band_model"].independent_vars["parameter_dict"]}')
+        LOGGER.debug(f'assembling array') #with parameters: {self.independent_vars["band_model"].independent_vars["parameter_dict"]}')
 
         A = dolfinx.fem.petsc.assemble_matrix(self.bilinear_form(),self.dolfin_bc())#diagonal=1234e10)
         A.assemble()
@@ -719,7 +719,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
     
     def solution_shape(self):
         band_model_shape = self.band_model.tensor_shape
-        x_shape = (self.mesh().geometry.x.shape[1],)
+        x_shape = (self.mesh().geometry.x.shape[0],)
         return band_model_shape[::2] + x_shape
         
     
@@ -794,11 +794,20 @@ class FEniCsObservable(AbstractObservable):
         if all(ss == 0 for ss in np.array(self.abstract_operator).ravel()):
             return 0 # trivial case, which breaks FEniCs
         
+        
+        
+        #handle cases where multiple vectors are passed 
+        if  vector.shape != self.envelope_model.solution_shape():
+            return np.array([self.mel(v,other_vector) for v in vector]) # loop over the passed vectors. This automatically also catches case where vec and other vec are both lists of vectors and returns an array of numbers
+        if other_vector is not None and other_vector.shape != self.envelope_model.solution_shape():
+            return np.array([self.mel(vector,vr) for vr in other_vector])
+        
         vector = self.envelope_model.flatten_eigentensors(vector)
         if other_vector is None:
             other_vector = vector
         else:
             other_vector =self.envelope_model.flatten_eigentensors(other_vector) 
+        
         
         # sign the numerical value of the functions in the array    
         self.left_v.x.array[:] = vector.flatten()

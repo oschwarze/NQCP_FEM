@@ -1,4 +1,5 @@
 import pandas as pd
+import pandas as pd
 from sklearn.model_selection import ParameterGrid
 from .solvers import ModelSolver
 import logging
@@ -58,7 +59,7 @@ class ParameterSearch():
     
     def __getstate__(self):
         state = self.__dict__.copy()
-        state['evaluation_function']= self.__raise_not_loaded__
+        #state['evaluation_function']= self.__raise_not_loaded__
         return state
     
     @property
@@ -75,6 +76,13 @@ class ParameterSearch():
         return new
 
     
+    def _param_set_preprocessing_(self,param_set):
+        if isinstance(param_set,dict):
+            param_set = (tuple(),param_set) # cast as kwargs
+        elif not (isinstance(param_set,tuple)):
+            param_set = ((param_set,),{})
+        return param_set
+        
     def run(self,save_results=True,skip_errors=True):
         
         # resume from here
@@ -82,10 +90,9 @@ class ParameterSearch():
         
         for i,param_set in enumerate(self.parameter_sets[start_i:]):
             LOGGER.info(f'evaluating at grid point {i+1+start_i}/{len(self.parameter_sets)}')
-            if isinstance(param_set,dict):
-                param_set = (tuple(),param_set) # cast as kwargs
-            elif not (isinstance(param_set,tuple)):
-                param_set = ((param_set,),{})
+            print(f'evaluating at grid point {i+1+start_i}/{len(self.parameter_sets)}')
+            print(f'parameters: {param_set}')
+            param_set = self._param_set_preprocessing_(param_set)
             try:
                 result = self.evaluation_function(*param_set[0],**param_set[1])
                 self._results_.append(result)
@@ -98,9 +105,6 @@ class ParameterSearch():
                 else:
                     LOGGER.warn(f'error occured:{err}')
                     self._results_.append(np.nan)
-<<<<<<< Updated upstream
-                
-=======
 
 
 class MPParameterSearch(ParameterSearch):
@@ -108,6 +112,7 @@ class MPParameterSearch(ParameterSearch):
         import multiprocessing as mp
         
         
+
         N =max(n_workers,len(self.parameter_sets)) 
         LOGGER.debug(f'setting up Pool of {N} workers')
         pool = mp.Pool(N)
@@ -148,7 +153,7 @@ class MPParameterSearch(ParameterSearch):
                 raise err
             LOGGER.info(f'error occured: {err}')
             return None
->>>>>>> Stashed changes
+
     
 class GridSearch(ParameterSearch):
     """
@@ -242,7 +247,6 @@ class GridSearchDB(GridSearch):
     the results are not put in directly but rather, functions applied to the results can be applied
     """
 
-    import pysos
     class DictDatabase():
         def __init__(self,filename):
             self.filename = filename
@@ -253,11 +257,13 @@ class GridSearchDB(GridSearch):
                 value = value.tolist()
             else:
                 value_type = str(type(value))
-
+            import pysos
             db=pysos.Dict(self.filename)
             db[key] = (value,value_type)
 
         def __getitem__(self, item):
+
+            import pysos
             db = pysos.Dict(self.filename)
             value,val_type = db[item]
             if val_type == 'np.ndarray':
@@ -265,16 +271,22 @@ class GridSearchDB(GridSearch):
             return value
 
         def __iter__(self):
+
+            import pysos
             db = pysos.Dict(self.filename)
             for k in db.keys():
                 yield k
 
         def items(self):
+
+            import pysos
             db = pysos.Dict(self.filename)
             for k in db.keys():
                 yield k,db[k]
 
         def keys(self):
+
+            import pysos
             return pysos.Dict(self.filename).keys()
 
     def __init__(self, parameter_grid, solver, ef_construction, evaluation_function,db_path):
@@ -450,7 +462,10 @@ class MinimizationSearch():
         self.is_scalar =  len(self.default_param_values) == 1
         if 'method' not in self.minimization_kwargs.keys():
             if self.is_scalar:
-                self.minimization_kwargs['method'] = 'bounded'
+                if 'bracket' in self.minimization_kwargs:
+                    self.minimization_kwargs['method'] = 'brent'
+                else:
+                    self.minimization_kwargs['method'] = 'bounded'
             else:
                 self.minimization_kwargs['method'] = 'SLSQP' # default minimization method
 
@@ -552,15 +567,38 @@ class MinimizationSearch():
         
         
         if self.is_scalar:
-            if 'xatol' not in self.minimization_kwargs:
-                self.minimization_kwargs['xatol'] = 0.1 # too small a tolerance is not justified given the resolution of the mesh. This means that we need ~2000 data points of the entire range to achieve the same accuracy
-
-            if 'disp' not in self.minimization_kwargs:
-                self.minimization_kwargs['disp'] = 3 # too small a tolerance is not justified given the resolution of the mesh. This means that we need ~2000 data points of the entire range to achieve the same accuracy
-            kwargs = self.minimization_kwargs.copy()
-            method = self.minimization_kwargs['method']
-            del kwargs['method']
-            minimization = minimize_scalar(minimization_func,bounds=bounds[0],method=method,options=kwargs)
+            
+            if 'bracket' in self.minimization_kwargs and self.minimization_kwargs['method'] == 'brent':
+                # convert the bracket:
+                b0,b1,b2 =self.minimization_kwargs['bracket'][0]
+                f0,f1,f2 = self.minimization_kwargs['bracket'][1]
+                
+                normalization = np.max([f0,f1,f2])/100
+                minimization_func.output_scale=normalization
+                
+                scale,shift = list(self.param_normalization.values())[0]
+                convert = lambda b: (b-shift)/scale
+                from scipy.optimize._optimize import OptimizeResult,Brent
+                brent = Brent(minimization_func,disp=3,tol=0.1)
+                
+                def ret_brack(*args,**kwargs):
+                    return convert(b0),convert(b1),convert(b2),f0,f1,f2,0 #xa,xb,xc,fa,fb,fc,funcalss
+                #owervrite bracket info func to avoid recomputing bracket vals
+                brent.get_bracket_info = ret_brack
+                brent.optimize()
+                x,fval,nit,nfev, = brent.get_result(full_output=True)
+                minimization = OptimizeResult(fun=fval,x=x,nit=nit,nfev=nfev,success=True,message='success')
+                
+                # We have to make the brent stuff ourselves because the we have alredy computed the bracket in full and do not need to evaluate the function at the bracket points
+                
+                
+                
+                
+                
+            else:
+                bracket = None
+                bound= bounds[0] = None
+                minimization = minimize_scalar(minimization_func,bounds=bound,bracket=bracket,method=self.minimization_kwargs['method'],options={'disp':3,'xtol':0.1})
 
         else:
             minimization = minimize(minimization_func,x0,bounds=bounds,**self.minimization_kwargs)
@@ -635,10 +673,11 @@ class IterativeModelSolver():
         self.solver = solver
         self.evaluation_func = evaluation_func
         self.prev_result = None
-        
+        self._i = 0
         
     def __call__(self,*args,**kwargs):
-        
+        self._i += 1
+        print(self._i)
         model = self.construction_func(*args,**kwargs)
         
         if self.prev_result is not None:
