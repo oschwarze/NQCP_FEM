@@ -144,6 +144,14 @@ class EnvelopeFunctionModel(UpdatableObject,ABC):
         return 1
     
 
+
+def sort_eigenvalues(eigenvalues,return_index = False):
+    E = eigenvalues 
+    E_p = np.sort(E[E>0])
+    E_n = np.sort(E[E<0])[::-1]
+    return np.vstack([E_p,E_n])
+    
+    
 @dataclass()
 class RectangleDomain(Domain):
     Lx: float
