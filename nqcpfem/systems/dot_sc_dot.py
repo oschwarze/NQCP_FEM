@@ -230,7 +230,90 @@ class DotSCDot(System):
                 subspace_I = self.select_subspace(subsp,res[1],2,x_points=X_arr)
                 vals.append(np.abs(res[0][subspace_I[0]]-res[0][subspace_I[1]]))
             
+<<<<<<< Updated upstream
             return vals
+=======
+        iterative_model_solver = IntermediateResSave(model_update,solver,evaluation_func,return_func=lambda x:x)
+        #endregion
+        
+        
+        parameter_range = tuple(p+E0 for p in parameter_range)
+        
+        #find T
+        LOGGER.info('finding T')
+        
+        iterative_model_solver.return_func = lambda x:x[0][0] # T number
+        t_crossing_finder = CrossingFinder(iterative_model_solver,parameter_range,**crossing_finder_kwargs)
+        
+        T_sol = t_crossing_finder.minimize(verbose_res=True)
+        LOGGER.debug(f'T_found. N_iter = {len(T_sol.derivs)}')
+        
+        
+        #find T_so
+        LOGGER.info('finding T_so')
+        iterative_model_solver.return_func = lambda x:x[0][1] #Tso number
+        x_vals = [s[0] for s in iterative_model_solver.saved_results]
+        y_vals = [s[-1][0][1] for s in iterative_model_solver.saved_results]
+        tso_crossing_finder,points = t_crossing_finder.warm_start(T_sol.derivs,iterative_model_solver,x_vals,y_vals,**crossing_finder_kwargs)
+        points = tso_crossing_finder.find_starting_points(points)
+        if isinstance(points,Result):
+            Tso_sol = points
+        else:
+            lp,rp = points 
+            Tso_sol = tso_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
+        
+        LOGGER.debug(f'Tso_found. N_iter = {len(Tso_sol.derivs)-len(T_sol.derivs)}')
+        #find D
+        LOGGER.info('finding D')
+        iterative_model_solver.return_func = lambda x:x[0][2] #D number
+        x_vals = [s[0] for s in iterative_model_solver.saved_results]
+        y_vals = [s[-1][0][2] for s in iterative_model_solver.saved_results]
+        D_crossing_finder,points = t_crossing_finder.warm_start(Tso_sol.derivs,iterative_model_solver,x_vals,y_vals,**crossing_finder_kwargs)
+        points = D_crossing_finder.find_starting_points(points)
+        if isinstance(points,Result):
+            D_sol = points
+        else:
+            lp,rp = points 
+            D_sol = D_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
+        
+        LOGGER.debug(f'D_found. N_iter = {len(D_sol.derivs)-len(Tso_sol.derivs)}')
+        #find D_so
+        
+        LOGGER.info('finding D_so')
+        iterative_model_solver.return_func = lambda x:x[0][3] #Dso number
+        x_vals = [s[0] for s in iterative_model_solver.saved_results]
+        y_vals = [s[-1][0][3] for s in iterative_model_solver.saved_results]
+        Dso_crossing_finder,points = t_crossing_finder.warm_start(D_sol.derivs,iterative_model_solver,x_vals,y_vals,**crossing_finder_kwargs)
+        points = Dso_crossing_finder.find_starting_points(points)
+        if isinstance(points,Result):
+            Dso_sol = points
+        else:
+            lp,rp = points 
+            Dso_sol=Dso_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
+        
+        LOGGER.debug(f'Dso_found. N_iter = {len(Dso_sol.derivs)-len(D_sol.derivs)}')
+
+        LOGGER.info(f'total number of function calls: {len(iterative_model_solver.saved_results)}')
+        
+        return T_sol,Tso_sol,D_sol,Dso_sol
+
+        """
+        # evaluate the model at the golden ratio points so that we can determine the initial brcaket
+        golden_mean = 0.5*(3-np.sqrt(5))
+        xL = parameter_range[0]+E0
+        xR = parameter_range[1]+E0
+        point_finder =lambda l,r: l+golden_mean*(r-l)
+        l0 = point_finder(xL,xR)
+        l1 = point_finder(l0,xR)
+        l2 = point_finder(l1,xR)
+        l3 = point_finder(xL,l1)
+        
+        bracket_sols = [iterative_model_solver({mu_R:l}) for l in (l0,l1,l2,l3)]
+        
+        
+        def bracket_finder(i):
+            ls = np.array([l0,l1,l2,l3])
+>>>>>>> Stashed changes
             
         iterative_model_solver = CrossingsFinder(model_update,solver,evaluation_func,return_func=lambda x:x[0])
         
@@ -246,7 +329,7 @@ class DotSCDot(System):
             x_vals = np.array([r[0][0][mu_R] for r in results])
             y_vals = np.array([r[-1][res_i] for r in results])
             #find the smallest two y_vals and return the corresponding x_vals
-            print(x_vals,y_vals)
+            LOGGER.debug(x_vals,y_vals)
             
             
             sorted_x_vals = x_vals[np.argsort(y_vals)] 
@@ -310,5 +393,246 @@ class CrossingsFinder(IterativeModelSolver):
         return self.return_func(res)
     
 
+<<<<<<< Updated upstream
 # region state Classes
 #endregion
+=======
+
+from collections import namedtuple
+Result = namedtuple('Result',['x','f','xvals','fvals','derivs'])
+
+class CrossingFinder():
+    def __init__(self,func,x_range,deriv_step_factor=1e-3,deriv_tol=1,max_iter=18,x_tol=1e-3):
+        self.func = func
+        self.x_range = x_range
+        self.deriv_step_factor = deriv_step_factor
+        self.deriv_tol = deriv_tol # how small should the derivative be before we believe that ii
+        self.max_iter = max_iter
+        self.x_tol = x_tol
+        self._fL_bound = None
+        self._fR_bound = None
+        self.derivs = []
+        
+    @property
+    def deriv_step(self):
+        return (self.x_range[1]-self.x_range[0])*self.deriv_step_factor
+    
+    
+    @property
+    def fL_bound(self):
+        if self._fL_bound is None:
+            self._fL_bound = self.func(self.x_range[0])
+        return self._fL_bound
+    
+    @property
+    def fR_bound(self):
+        if self._fR_bound is None:
+            self._fR_bound = self.func(self.x_range[1])
+        return self._fR_bound
+    
+    def minimize(self,xL=None,fL=None,dL=None,xR=None,fR=None,dR=None,verbose_res=False):
+        class func_wrap():
+            def __init__(self,func):
+                self.xs = []
+                self.fs = []
+                self.func = func
+            def __call__(self,x):
+                self.xs.append(x)
+                y = self.func(x)
+                self.fs.append(y)
+                return y
+        func = func_wrap(self.func)
+        if xL is None or xR is None:
+            xL,xR = self.x_range[0],self.x_range[1]
+            fL,fR = self.fL_bound,self.fR_bound
+            dL = (-1,-1)
+            dR = (1,1)
+        if dR is None:
+            dR = (1,1)
+        if dL is None:
+            dL = (-1,-1)
+        i  = 0
+        
+
+        
+        returner = lambda x,f: Result(x,f,func.xs,func.fs,self.derivs) if verbose_res else (x,f) 
+        
+        maxima = []
+        x = (xR+xL)/2
+        while i<self.max_iter:
+            i+=1
+            LOGGER.debug((i,xR,xL))
+            x_old = x
+            x = (fL-fR +xL+xR)/2
+            # if outside interval: reflect it into the interval
+            
+            if x<xL:
+                LOGGER.debug(f'reflect around xL: {x,2*(xL-x)}')
+                x = x + 2*(xL-x)
+            if x>xR:
+                LOGGER.debug(f'reflect around xR: {x,-2*(x-xR)}')
+                x = x - 2*(x-xR)
+            
+            # if too close to the edge: move it further in
+            if np.isclose(x,xL,atol=10*self.deriv_step):
+                LOGGER.debug(f'shift right: {x,10*self.deriv_step}')
+                x += 10*self.deriv_step
+            if np.isclose(x,xR,atol=10*self.deriv_step):
+                LOGGER.debug(f'shift left: {x,-10*self.deriv_step}')
+                x += -10*self.deriv_step
+            
+            # if it is still too close, outside or interval is too small. We do the alternative point distinguising
+            
+            
+            if x<xL or x>xR or any(np.isclose(x,[xL,xR],atol=10*self.deriv_step)) or np.abs(xR-xL)<2*self.x_tol*(self.x_range[1]-self.x_range[0]):
+                # we get here if: linear intersection guess moves us further away, is too close to previous points, or search interval is already small
+                # find the closest of xL and xR and move 10*self.deriv_step towards the center
+                print_tup = (x<xL,x>xR)
+                
+                # be closest to the point with smallest derivative 
+                left_deriv = np.abs(dL[1]) if np.abs(dL[1])<self.deriv_tol else np.abs(dL[0])
+                right_deriv = np.abs(dR[0]) if np.abs(dR[0])<self.deriv_tol else np.abs(dR[1])
+                delta = left_deriv-right_deriv
+                sigma = left_deriv+right_deriv
+                # delta = 0 -> middle. delta = sigma -> right point. delta = -sigma left_point
+                x_new= (0.5+delta/(2*sigma))*xR + (0.5-delta/(2*sigma))*xL  # shift delta according to the smallest derivative.
+                
+                LOGGER.debug(f'alternative:{x,x_new}. reason:{x<xL ,x>xR,np.isclose(x,[xL,xR],atol=10*self.deriv_step),np.abs(xR-xL)<2*self.x_tol*(self.x_range[1]-self.x_range[0])} ')
+            
+            LOGGER.debug(f'relative {(x-x_old)/(self.x_range[1]-self.x_range[0])}')
+            deriv=self.derivative_check(x,return_derivs=True)
+            LOGGER.debug(f'deriv: {(i,deriv,x)}')
+            self.derivs.append((x,)+deriv[1:])
+            direc = deriv[0]
+            fx = deriv[1]
+            if direc is None:
+                maxima.append((x,deriv[1:]))
+                # pick a point between the maxima and the furthest of the points xL, xR
+                if (x-xL) < (xR-x) :
+                    xL = x
+                    fL = fx
+                else:
+                    xR = x
+                    fR = fx
+                
+            if (xR-xL)<self.x_tol*(self.x_range[1]-self.x_range[0]):
+                LOGGER.debug(f'converged in {i} steps. Reason: x is within ({xL},{xR})')
+                break
+            if direc == 0:
+                LOGGER.debug(f'converged in {i} steps. Reason: valid local minimum.')
+                break
+            else:
+                #look at all derivs and pick the next guess
+                left,right = self.find_starting_points(self.derivs)
+                LOGGER.debug((left,right))
+                xL,fL,dL = left[:3]
+                xR,fR,dR = right[:3]
+                
+        if i<self.max_iter:
+            return returner(x,fx)
+        else:
+            LOGGER.debug('did not converge')
+            return  returner(x,fx)
+
+    def derivative_check(self,x0,f0=None,dfs=None,return_derivs=False):
+        # check left first and if it is within tol, check right as well
+        if dfs is None or f0 is None:
+            f0 = self.func(x0)
+            fl = self.func(x0-self.deriv_step)
+            fr = self.func(x0+self.deriv_step)
+            
+            dfl = (f0-fl)/self.deriv_step 
+            dfr = (fr-f0)/self.deriv_step
+        else:
+            dfl,dfr = dfs
+        returner = lambda x: (x,f0,(dfl,dfr)) if return_derivs else (x,f0)
+        if np.sign(dfl) == np.sign(dfr):
+            return returner(-1*np.sign(dfl)) # go in the direction of of downhill slope
+        else: # np.sign(dfl)<=0 and np.sign(dfr)>=0:
+            if np.abs(dfl)>self.deriv_tol and np.abs(dfr)>self.deriv_tol:
+                # go in direction with lowest value:
+                return returner(None) # invalid local extremum? 
+                return returner(1 if np.abs(dfl) < dfr else -1)
+            elif np.abs(dfl)>self.deriv_tol and dfr<self.deriv_tol:
+                return returner(-1*np.sign(dfr))# go in the direction specified by the one below self.deriv_tol
+            elif np.abs(dfl)<self.deriv_tol and dfr>self.deriv_tol:    
+                return returner(-1*np.sign(dfl))# go in the direction specified by the one below self.deriv_tol
+            elif dfl>-self.deriv_tol and dfr<self.deriv_tol:
+                return returner(0) # we converged
+            else:
+                LOGGER.debug('local maxima')
+                return returner(None) # pick any i guess
+
+    def find_starting_points(self,derivative_points,return_minimum=True):
+        """ based on the derivatives at the points, estimate the best starting x-points. 
+        These are chosen to be the two points that are closest to eachother,while still having the opposite sign of the derivatives"""
+        left_points = []
+        right_points = []
+        for point in derivative_points:
+            grad = self.derivative_check(*point)[0]
+            LOGGER.debug((point,grad))
+            if grad is None:
+                continue # skip local maxima
+            if grad > 0: # go to right i.e. this point is to the left:
+                left_points.append(point)
+            elif grad < 0:
+                right_points.append(point)
+            elif return_minimum:
+                LOGGER.debug('minimum_found')
+                return Result(point[0],point[1],[],[],self.derivs)
+        
+        
+        def outermost_point_I(points,dir):
+            xs =  np.array([p[0] for p in points])
+            func = np.argmax if dir=='left' else np.argmin
+            return points[func(xs)]
+        
+        
+        l_point = outermost_point_I(left_points,'left') if len(left_points) else (self.x_range[0],self.fL_bound,(-1,-1))
+        r_point = outermost_point_I(right_points,'right') if len(right_points) else (self.x_range[1],self.fR_bound,(1,1))
+        
+        if l_point > r_point:
+            raise Exception('left was to the right of right...')
+        return l_point,r_point
+
+    
+    @classmethod
+    def warm_start(cls,old_points,new_func,x_vals,new_values,deriv_step_factor=None,**finder_kwargs):
+        """create a new crossing finder and a set of points which can be passed to find_starting_points of the crossing finder for a warm start"""
+        
+        # assumes x_range is in x_vals as min and max
+        xLi = np.argmin(x_vals)
+        xRi = np.argmax(x_vals)
+        
+        if deriv_step_factor is None:   
+            new = CrossingFinder(new_func,(x_vals[xLi][0],x_vals[xRi][0]),**finder_kwargs)
+        else:
+            new = CrossingFinder(new_func,(x_vals[xLi][0],x_vals[xRi][0]),deriv_step_factor = deriv_step_factor,**finder_kwargs)
+        # set bounds
+        LOGGER.debug(new.x_range)
+        LOGGER.debug(new.deriv_step_factor)
+        LOGGER.debug(new.deriv_step)
+        
+        new._fL_bound = new_values[xLi]
+        new._fR_bound = new_values[xRi]
+
+        
+        new_values = np.asarray(new_values)
+        x_vals = np.asarray(x_vals)
+        
+        # create new point list:
+        new_points = []
+        for p in old_points:
+            x = p[0]
+            f = new_values[np.where(x_vals==x)[0]][0]
+            fl = new_values[np.where(x_vals==x-new.deriv_step)[0]][0]
+            fr = new_values[np.where(x_vals==x+new.deriv_step)[0]][0]
+            dfl = (f-fl)/new.deriv_step
+            dfr = (fr-f)/new.deriv_step
+            LOGGER.debug((x,f,(dfl,dfr)))
+            new_points.append((x,f,(dfl,dfr)))
+        new.derivs = new_points
+        return new,new_points
+
+
+>>>>>>> Stashed changes
