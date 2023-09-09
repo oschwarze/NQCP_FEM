@@ -541,6 +541,7 @@ class CrossingFinder():
                 LOGGER.debug(f'shift left: {x,-10*self.deriv_step}')
                 x += -10*self.deriv_step
             
+            
             # if it is still too close, outside or interval is too small. We do the alternative point distinguising
 
             if x<xL or x>xR or any(np.isclose(x,[xL,xR],atol=10*self.deriv_step)) or np.abs(xR-xL)<2*self.x_tol*(self.x_range[1]-self.x_range[0]):
@@ -555,8 +556,8 @@ class CrossingFinder():
                 # delta = 0 -> middle. delta = sigma -> right point. delta = -sigma left_point
 
                 x_new= (0.5+delta/(2*sigma))*xR + (0.5-delta/(2*sigma))*xL  # shift delta according to the smallest derivative.
-                
                 LOGGER.debug(f'alternative:{x,x_new}. reason:{x<xL ,x>xR,np.isclose(x,[xL,xR],atol=10*self.deriv_step),np.abs(xR-xL)<2*self.x_tol*(self.x_range[1]-self.x_range[0])} ')
+
                 LOGGER.debug((left_deriv,right_deriv,delta,sigma,(0.5+delta/(2*sigma)),(0.5-delta/(2*sigma))))
                 x = x_new
             prev_xs = np.array([m[0] for m in maxima] + [m[0] for m in self.derivs])
@@ -569,7 +570,7 @@ class CrossingFinder():
                     x += 2*self.deriv_step
                 else:
                     x += -2*self.deriv_step
-                
+
             LOGGER.debug(f'relative {(x-x_old)/(self.x_range[1]-self.x_range[0])}')
             deriv=self.derivative_check(x,return_derivs=True)
             LOGGER.debug(f'deriv: {(i,deriv,x)}')
@@ -587,10 +588,10 @@ class CrossingFinder():
                     xR = x
                     fR = fx
                 
-            if (xR-xL)<self.x_tol*(self.x_range[1]-self.x_range[0]):
+            elif (xR-xL)<self.x_tol*(self.x_range[1]-self.x_range[0]):
                 LOGGER.debug(f'converged in {i} steps. Reason: x is within ({xL},{xR})')
                 break
-            if direc == 0:
+            elif direc == 0:
                 LOGGER.debug(f'converged in {i} steps. Reason: valid local minimum.')
 
                 break
