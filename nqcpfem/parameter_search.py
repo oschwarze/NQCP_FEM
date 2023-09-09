@@ -113,7 +113,7 @@ class MPParameterSearch(ParameterSearch):
         
         
 
-        N =max(n_workers,len(self.parameter_sets)) 
+        N =min(n_workers,len(self.parameter_sets)) 
         LOGGER.debug(f'setting up Pool of {N} workers')
         pool = mp.Pool(N)
         LOGGER.info(f'running multiprocessing map of {len(self.parameter_sets)} parameter sets')
