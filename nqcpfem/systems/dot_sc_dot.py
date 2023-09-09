@@ -194,8 +194,10 @@ class DotSCDot(System):
         down_h_state = DefiniteTensorComponent(down_h_mask,'spin down hole')
         
         
-        mu_L,mu_R = sympy.symbols('\mu_{L},\mu_{R}')
-        detuning = SymbolicFunction(sympy.Piecewise((-mu_L,self.domains['ld_in']),(-mu_R,self.domains['rd_in']),(0,True)),'\mu_{detuning}(x)')
+        mu_L = sympy.Dummy(r'\mu_{L}') # make them dummies to avoid overwriting them 
+        mu_R = sympy.Dummy(r'\mu_{R}')
+        mu_detuning = sympy.Dummy('\mu_{detuning}(x)',commutative=False)
+        detuning = SymbolicFunction(sympy.Piecewise((-mu_L,self.domains['ld_in']),(-mu_R,self.domains['rd_in']),(0,True)),mu_detuning)
         
         self.envelope_model.band_model.add_potential(detuning)
         self.envelope_model.band_model.parameter_dict[mu_L] = E0
@@ -296,10 +298,15 @@ class DotSCDot(System):
             lp,rp = points 
             Dso_sol=Dso_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
         
-
+        
         LOGGER.debug(f'Dso_found. N_iter = {len(Dso_sol.derivs)-len(D_sol.derivs)}')
 
         LOGGER.info(f'total number of function calls: {len(iterative_model_solver.saved_results)}')
+        
+        # set the sytem back to what it was before (to avoid mysterious behaviour when working with the system again)
+        self.envelope_model.band_model.independent_vars['preprocessed_array'] = self.envelope_model.band_model.independent_vars['preprocessed_array'].subs(mu_detuning,0)
+        del self.envelope_model.band_model.function_dict[mu_detuning] 
+        
         
         return T_sol,Tso_sol,D_sol,Dso_sol
 
@@ -540,7 +547,6 @@ class CrossingFinder():
             if x<xL or x>xR or any(np.isclose(x,[xL,xR],atol=10*self.deriv_step)) or np.abs(xR-xL)<2*self.x_tol*(self.x_range[1]-self.x_range[0]):
                 # we get here if: linear intersection guess moves us further away, is too close to previous points, or search interval is already small
                 # find the closest of xL and xR and move 10*self.deriv_step towards the center
-                print_tup = (x<xL,x>xR)
                 
                 # be closest to the point with smallest derivative 
                 left_deriv = np.abs(dL[1]) if np.abs(dL[1])<self.deriv_tol else np.abs(dL[0])
@@ -551,7 +557,20 @@ class CrossingFinder():
 
                 x_new= (0.5+delta/(2*sigma))*xR + (0.5-delta/(2*sigma))*xL  # shift delta according to the smallest derivative.
                 LOGGER.debug(f'alternative:{x,x_new}. reason:{x<xL ,x>xR,np.isclose(x,[xL,xR],atol=10*self.deriv_step),np.abs(xR-xL)<2*self.x_tol*(self.x_range[1]-self.x_range[0])} ')
-                LOGGER.debug(f'{left_deriv,right_deriv,delta,sigma,(0.5+delta/(2*sigma)),(0.5-delta/(2*sigma))}') 
+
+                LOGGER.debug((left_deriv,right_deriv,delta,sigma,(0.5+delta/(2*sigma)),(0.5-delta/(2*sigma))))
+                x = x_new
+            prev_xs = np.array([m[0] for m in maxima] + [m[0] for m in self.derivs])
+            if any(np.isclose(x,prev_xs,atol=self.deriv_step)):
+                point = prev_xs[np.isclose(x,prev_xs,atol=self.deriv_step)]
+                LOGGER.debug(f'already seen: {point}. shifting the point')
+                if not isinstance(point,float):
+                    point = point[0]
+                if x-xL < xR-x:
+                    x += 2*self.deriv_step
+                else:
+                    x += -2*self.deriv_step
+
             LOGGER.debug(f'relative {(x-x_old)/(self.x_range[1]-self.x_range[0])}')
             deriv=self.derivative_check(x,return_derivs=True)
             LOGGER.debug(f'deriv: {(i,deriv,x)}')
