@@ -282,6 +282,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         Constructs a dictionary mapping the free sympy symbols of the post-processed array to dolfinx constanps
         """
 
+        LOGGER.debug('creating constants dict')
         # We avoid accessing the parameter_dict (and hence raising the changed flag) by directly looking at the post-processed functions and arrays for free symbols 
         band_model = self.independent_vars['band_model']
         free_syms = tuple( s for s in band_model.post_processed_array().free_symbols if (s not in band_model.momentum_symbols + band_model.position_symbols) and (s.name[-3:] != '(x)')) # functions and special variables are excluded as they do not need casting as dolfinx constants
@@ -454,22 +455,14 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 L+= term
 
         return L
-        
     @auto_update
-    def bilinear_form(self,overwrite=False):
-        """
-        Assemble the bilinear form for the band model by fixing the values of the constants to the values specified ind the models parameter dict
-        :param bool overwrite: whether to overwrite any previously computed bilinear form
-        :return:
-        """
-
-        
-        LOGGER.debug('gathering bilinear_form')
+    def __gather_constants__(self):
+        LOGGER.debug('gathering constants')
         constants_dict = self.dolfinx_constants()
         
         # update the value of the constants based on the values stored in the band_model parameter_dict and constants dict:
         numbers_dict = self.independent_vars['band_model'].independent_vars['parameter_dict'].copy()
-        numbers_dict.update(self.independent_vars['band_model'].independent_vars['constants'])
+        const_dict = self.independent_vars['band_model'].independent_vars['constants']
         
         for k,const in constants_dict.items():
             if k in self.independent_vars['band_model'].position_symbols:
@@ -479,11 +472,24 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
             else:
                 try:
                     const.value = np.complex128(numbers_dict[k])
+                    
                 except KeyError as err:
-                    raise KeyError(f'key {k} in dolfinx_constants() was not found in neither the parameter_dict nor the constants dict of the band_model.') from err
+                    try:
+                        const.value = np.complex128(const_dict[k])
+                    except KeyError as e:
+                        raise KeyError(f'key {k} in dolfinx_constants() was not found in neither the parameter_dict nor the constants dict of the band_model.') from e
         #we can now assemble the form  
+        return constants_dict
+    @auto_update
+    def bilinear_form(self,overwrite=False):
+        """
+        Assemble the bilinear form for the band model by fixing the values of the constants to the values specified ind the models parameter dict
+        :param bool overwrite: whether to overwrite any previously computed bilinear form
+        :return:
+        """
+        LOGGER.debug('gathering bilinear_form')
+
         assembled_form = dolfinx.fem.form(self.ufl_form(),jit_options={'timeout':20})
-            
         return assembled_form
         """
         # assemble L (this workaround has to be used since the program doesn't handle all zero terms...)
@@ -549,19 +555,52 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         u_boundary = dolfinx.fem.Function(self.function_space())
         dolfinx.fem.petsc.set_bc(u_boundary.vector, [infinity_boundary])
         u_boundary.x.scatter_forward()
+        return u_boundary.vector # retun the petsc vector
         from scipy.sparse import diags
         return diags(u_boundary.vector.getArray(),offsets=0,format='csr')
     
-    @auto_update    
-    def assemble_array(self, sparse=True): # only use old solution of user knows what he is doing!
+    @auto_update
+    def __make_unassembled_array__(self):
+        LOGGER.debug('creating PETSc Matrix')
+        try:
+            old_a = self._saved_assemble_array.value #type:ignore
+            old_a.destroy() # delete old object if it is out of date
+        except Exception:
+            pass    
 
+        A = dolfinx.fem.petsc.create_matrix(self.bilinear_form())#diagonal=1234e10)
+        return A
+    
+    def assemble_array(self,petsc_array=None):
+        """ Assembles the array. This always returns a new instance because petsc arrays are altred"""
+
+        
+        petsc_A = self.__assemble_petsc_array__()
+        if petsc_array is None:
+            from scipy.sparse import csr_matrix
+            return csr_matrix(petsc_A.getValuesCSR()[::-1])
+        
+        elif isinstance(petsc_array,PETSc.Mat):
+            return petsc_A.copy(petsc_array) # copy the array into the passed matrix 
+        elif isinstance(petsc_array,bool) and petsc_array:
+            return petsc_A.copy() # create a new copy
+        
+
+    @auto_update
+    def __assemble_petsc_array__(self, sparse=True): # only use old solution of user knows what he is doing!
+        """ This metho actull cnstructs the assembled array, but since petsc matrices can be altered, we have to protect te output of this in order t guarantee tha it can be reused without having been altered"""
         
         
         LOGGER.debug(f'assembling array') #with parameters: {self.independent_vars["band_model"].independent_vars["parameter_dict"]}')
-
-        A = dolfinx.fem.petsc.assemble_matrix(self.bilinear_form(),self.dolfin_bc())#diagonal=1234e10)
+        A = self.__make_unassembled_array__() #this reuses existing elements
+        A.zeroEntries() # clear the entries of any previous run
+        constants = self.__gather_constants__() # value is not used, but this function also updates the DolfinxConstants 
+        A = dolfinx.fem.petsc.assemble_matrix(A,self.bilinear_form(),bcs=self.dolfin_bc())#diagonal=1234e10)
         A.assemble()
 
+        A.setDiagonal(self.infinite_boundary_vec().copy(),PETSc.InsertMode.ADD_VALUES)
+        A.assemble()
+        return A
         from scipy.sparse import  csr_matrix
         array = csr_matrix(A.getValuesCSR()[::-1]) # return as scipy sparse matrix
         # set boundary diagonals to zero
@@ -639,8 +678,24 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
 
         return ComputedAttribute(A,time.time(),old_S_array.constructor,(function_space,band_model,dolfin_bc),old_S_array.attr_name)
     
+    
+    
+    def make_S_array(self,petsc_array=None):
+        S = self.__make_S_petsc_mat__()
+        S.assemble()
+        
+        if petsc_array is None:
+            from scipy.sparse import  csr_matrix
+            return csr_matrix(S.getValuesCSR()[::-1]) # return as scipy sparse matrix
+        
+        elif isinstance(petsc_array,PETSc.Mat):
+            return S.copy(petsc_array) # copy the array into the passed matrix 
+        elif isinstance(petsc_array,bool) and petsc_array:
+            return S.copy() # create a new copy
+        
+    
     @auto_update
-    def make_S_array(self):
+    def __make_S_petsc_mat__(self):
         u = ufl.TrialFunction(self.function_space())
         v = ufl.TestFunction(self.function_space())
 
@@ -654,11 +709,9 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
 
         form = dolfinx.fem.form(L)
         A = dolfinx.fem.petsc.assemble_matrix(form,self.dolfin_bc())
-        A.assemble()
+        return A
 
 
-        from scipy.sparse import  csr_matrix
-        return csr_matrix(A.getValuesCSR()[::-1]) # return as scipy sparse matrix
 
 
     def project_operator(self,operator):

@@ -22,7 +22,52 @@ class Domain():
         if self.__mesh_scale__ is None:
             self.__mesh_scale__ = 1
         return self.__mesh_scale__
+
+#region Matrix Forms
+
+
+class MatrixForm(ABC):
     
+    @abstractmethod
+    def scipy_form(self):
+        raise NotImplementedError
+    
+    
+    def petsc_form(self):
+        raise NotImplementedError
+    
+    
+    
+class PETScMatrixForm(MatrixForm):
+    
+    def __init__(self,petsc_mat):
+        self.__petsc_mat__ = petsc_mat
+    
+    
+    def scipy_form(self):
+        from scipy.sparse import csr_matrix
+        mat = csr_matrix(self.__petsc_mat__.getValuesCSR()[::-1])
+        return mat
+    
+    def petsc_form(self):
+        return self.__petsc_mat__
+
+class ScipyMatrixForm(MatrixForm):
+    def __init__(self,scipy_mat):
+        self.__scipy_mat__ = scipy_mat
+        
+    def scipy_form(self):
+        return self.__scipy_mat__
+
+    def petsc_form(self):
+        from petsc4py import PETSc
+        a = self.__scipy_mat__
+        A = PETSc.Mat().createAIJ(a.shape,csr=(a.indptr,a.indices,a.data))
+        A.assemble()
+        return A
+        
+
+#endregion    
 class EnvelopeFunctionModel(UpdatableObject,ABC):
     def __int__(self, band_model:BandModel,domain=None,**independent_vars):
         """
@@ -149,7 +194,16 @@ def sort_eigenvalues(eigenvalues,return_index = False):
     E = eigenvalues 
     E_p = np.sort(E[E>0])
     E_n = np.sort(E[E<0])[::-1]
-    return np.vstack([E_p,E_n])
+    
+    l = min(e.shape[0] for e in (E_p,E_n))
+    # zip them together
+    sorted = [j for i in zip(E_p,E_n) for j in i]
+    if E_p.shape[0] > l:
+        sorted.extend(E_p[l:])
+    elif E_p.shape[0] < l:
+        sorted.extend(E_n[l:])
+        
+    return np.array(sorted)
     
     
 @dataclass()

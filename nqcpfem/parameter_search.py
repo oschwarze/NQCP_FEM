@@ -7,7 +7,7 @@ import numpy as np
 from scipy.optimize import minimize,minimize_scalar
 import pickle as pkl
 import os 
-
+import multiprocessing as mp
 
 from . import UNIT_CONVENTION
 E0 = 1/(UNIT_CONVENTION['J to eV']*100000) # unit_scale: 10muev
@@ -82,7 +82,18 @@ class ParameterSearch():
         elif not (isinstance(param_set,tuple)):
             param_set = ((param_set,),{})
         return param_set
-        
+    
+    def __run_for_point__(self,param_set,skip_errors):
+        param_set = self._param_set_preprocessing_(param_set)
+        try:
+            result = self.evaluation_function(*param_set[0],**param_set[1])
+        except Exception as err:
+            if (not skip_errors) or isinstance(err,NotLoadedError):
+                raise err
+            else:
+                LOGGER.warn(f'error occured:{err}')
+                return np.nan
+        return result 
     def run(self,save_results=True,skip_errors=True):
         
         # resume from here
@@ -90,23 +101,12 @@ class ParameterSearch():
         
         for i,param_set in enumerate(self.parameter_sets[start_i:]):
             LOGGER.info(f'evaluating at grid point {i+1+start_i}/{len(self.parameter_sets)}')
-            print(f'evaluating at grid point {i+1+start_i}/{len(self.parameter_sets)}')
-            print(f'parameters: {param_set}')
-            param_set = self._param_set_preprocessing_(param_set)
-            try:
-                result = self.evaluation_function(*param_set[0],**param_set[1])
-                self._results_.append(result)
-                if save_results: 
-                    self.save(overwrite=True)
-    
-            except Exception as err:
-                if (not skip_errors) or isinstance(err,NotLoadedError):
-                    raise err
-                else:
-                    LOGGER.warn(f'error occured:{err}')
-                    self._results_.append(np.nan)
-
-
+            LOGGER.debug(f'parameters: {param_set}')
+            result = self.__run_for_point__(param_set,skip_errors)
+            self._results_.append(result)
+            if save_results:
+                self.save(True)
+                
 class MPParameterSearch(ParameterSearch):
     def run(self,n_workers,save_results=True,skip_errors=True):
         import multiprocessing as mp
@@ -133,28 +133,117 @@ class MPParameterSearch(ParameterSearch):
     @staticmethod
     def run_func(args):#inst,param_set,skip_errors):
         param_set,inst,skip_errors,save_results,i = args
-        param_set = inst._param_set_preprocessing_(param_set)
+        
+        LOGGER.debug(f'running multiprocessing evaluation for element {i}')
+        result =inst.__run_for_point__(param_set,skip_errors)
+        if save_results:
+            base_dir = os.path.dirname(inst.save_file)
+            if not len(base_dir):
+                base_dir = os.getcwd()
+            dir_name = base_dir + '/partial_results/'
+            filename = dir_name+f'result_{i}_{inst.save_file}'
+            with open(filename,'wb') as f:
+                pkl.dump(result,f)
 
-        try:
-            LOGGER.debug(f'running multiprocessing evaluation for element {i}')
-            result = inst.evaluation_function(*param_set[0],**param_set[1])
-            print(f'result: {result}')    
-            if save_results:
-                base_dir = os.path.dirname(inst.save_file)
-                if not len(base_dir):
-                    base_dir = os.getcwd()
-                dir_name = base_dir + '/partial_results/'
-                filename = dir_name+f'result_{i}_{inst.save_file}'
-                with open(filename,'wb') as f:
-                    pkl.dump(result,f)
             return result
-        except Exception as err:
-            if not skip_errors:
-                raise err
-            LOGGER.info(f'error occured: {err}')
-            return None
 
+import shelve,dbm
+class DBParameterSearch(ParameterSearch):
+    def __init__(self, parameter_sets: Iterable, evaluation_function, save_file: str | None = None):
+        super().__init__(parameter_sets, evaluation_function, save_file)
+        if self.save_file is None:
+            raise SyntaxError('save-file must be passed to a DBParameterSearch')
+        
+        import re
+        save_prefix = re.search('([.]*).([.])',self.save_file)
+        if save_prefix is None:
+            prefix = self.save_file
+        else:
+            prefix = save_prefix.group(1)
+            
+        self.db_name = 'db_'+prefix +'.db'       
+        dbm._defaultmod = dbm.ndbm
+        with shelve.open(self.db_name) as db:
+            db['__parameter_sets__'] = self.parameter_sets
+            
+    @property
+    def results(self):
+        # return generator which loops over the elements of the file
+        with self.__db__() as db:
+            i=-1
+            while True:
+                try:
+                    i+=1
+                    yield db[str(i)]
+                except KeyError:
+                    break
     
+    def __db__(self):
+        return shelve.open(self.db_name)
+    def run(self, save_results=True, skip_errors=True):
+
+        if save_results:
+            self.save(overwrite=True) #make sure that the instane is also saved, and not just the database
+        with self.__db__() as db:
+            for i,param_set in enumerate(self.parameter_sets):
+                if str(i) not in db:
+                    LOGGER.info(f'evaluating at grid point {i+1}/{len(self.parameter_sets)}')
+                    LOGGER.debug(f'parameters: {param_set}')
+                    result =self.__run_for_point__(param_set,skip_errors=skip_errors)
+                    if save_results:
+                        db[str(i)] = result
+
+class DBMPParameterSearch(DBParameterSearch,MPParameterSearch):
+    """ Multiprocessing ParaeterSearch which stores the result in a Shelve. One worker is tasked wit saving the results. (since shelve is not thread safe)
+    structure of worker-listener is from https://stackoverflow.com/a/13530258
+    """
+    
+    
+    
+    @staticmethod
+    def run_func(args,q):
+        param_set,inst,skip_errors,save_results,i = args 
+        result =MPParameterSearch.run_func((param_set,inst,skip_errors,False,i)) # do not save the results in the old way
+        q.put((i,result))
+        return i # do not return result as it will fill up memory
+
+    @staticmethod
+    def __write_to_db__(inst,q):
+        
+        with inst.__db__() as db:
+            while True:
+                i,result = q.get()
+                if result == 'kill':
+                    LOGGER.debug('recieved kill signal')
+                    break
+                LOGGER.debug(f'writing result {i}')
+                db[str(i)] = result
+    def run(self,n_workers, save_results=True, skip_errors=True):
+        if not save_results:
+            raise NotImplementedError
+            #run MP run without saving
+        
+        if n_workers < 2:
+            raise ValueError('at least 2 workes are required for database ParameterSearch as one worker is reserved for writing')
+        manager = mp.Manager()
+        q = manager.Queue()
+        pool = mp.Pool(n_workers)
+        
+        watcher = pool.apply_async(self.__write_to_db__,(self,q))
+        
+        jobs = []
+        for i,param_set in enumerate(self.parameter_sets):
+            job = pool.apply_async(self.run_func,((param_set,self,skip_errors,save_results,i),q))
+            jobs.append(job)
+            
+        for job in jobs:
+            job.get()
+        LOGGER.debug('killing listener')
+        q.put('kill')
+        pool.close()
+        pool.join()
+        
+        
 class GridSearch(ParameterSearch):
     """
     Specific ParameterSearch where the parameters sets are formed by a ParameterGrid (checking all combinations of values for the different arguments)
@@ -371,18 +460,6 @@ class GridSearchDB(GridSearch):
 
         return res_number
 
-
-class GridSearchCSV(GridSearch):
-
-    def save(self,filename,overwrite=False):
-
-        if not overwrite:
-            import os
-            if os.path.exists(filename):
-                raise FileExistsError(f'file {filename} already exists and overwrite was set to False')
-
-        df = self.to_dataframe()
-        df.to_csv(filename)
 
 
 def detuning_parameter_set(default_values,detuning_range,n_points,signature=(-1,+1)):
