@@ -148,12 +148,19 @@ class MPParameterSearch(ParameterSearch):
         try:
             LOGGER.debug(f'running multiprocessing evaluation for element {i}')
             result = inst.evaluation_function(*param_set[0],**param_set[1])
-            print(f'result: {result}')    
+            LOGGER.debug(f'element {i}: complete.')
             if save_results:
 
                 with open(filename,'wb') as f:
                     pkl.dump(result,f)
             return result
+        except Exception as err:
+            if skip_errors:
+                LOGGER.info(f'error occured:{err}. skipping')
+                return np.nan
+            else:
+                raise err
+        
 
 import shelve,dbm
 class DBParameterSearch(ParameterSearch):
@@ -163,7 +170,7 @@ class DBParameterSearch(ParameterSearch):
             raise SyntaxError('save-file must be passed to a DBParameterSearch')
         
         import re
-        save_prefix = re.search('([.]*).([.])',self.save_file)
+        save_prefix = re.search('([^.]*).([^.*])',self.save_file)
         if save_prefix is None:
             prefix = self.save_file
         else:
@@ -189,9 +196,9 @@ class DBParameterSearch(ParameterSearch):
     def __db__(self):
         return shelve.open(self.db_name)
     def run(self, save_results=True, skip_errors=True):
-
+        LOGGER.info(f'running database parametersearch with {len(self.parameter_sets)} points')
         if save_results:
-            self.save(overwrite=True) #make sure that the instane is also saved, and not just the database
+            self.save(overwrite=True) #make sure that the instance is also saved, and not just the database
         with self.__db__() as db:
             for i,param_set in enumerate(self.parameter_sets):
                 if str(i) not in db:
@@ -212,31 +219,40 @@ class DBMPParameterSearch(DBParameterSearch,MPParameterSearch):
     def run_func(args,q):
         param_set,inst,skip_errors,save_results,i = args 
         result =MPParameterSearch.run_func((param_set,inst,skip_errors,False,i)) # do not save the results in the old way
+        LOGGER.debug(f'sending element {i} to file-writer')
         q.put((i,result))
         return i # do not return result as it will fill up memory
 
     @staticmethod
     def __write_to_db__(inst,q):
-        
-        with inst.__db__() as db:
-            while True:
-                i,result = q.get()
-                if result == 'kill':
-                    LOGGER.debug('recieved kill signal')
-                    break
-                LOGGER.debug(f'writing result {i}')
-                db[str(i)] = result
+       try: 
+            with inst.__db__() as db:
+                while True:
+                    LOGGER.debug('file-writer waiting for results')
+                    i,result = q.get()
+                    if isinstance(result,str) and result == 'kill':
+                        LOGGER.debug('recieved kill signal')
+                        break
+                    LOGGER.debug(f'recieved result {i}. Writing to database')
+                    db[str(i)] = result
+            
+            return 
+       except Exception as err:
+           LOGGER.exception(f'critial error occured in filer-writer: {err}')
+           return 
     def run(self,n_workers, save_results=True, skip_errors=True):
         if not save_results:
             raise NotImplementedError
             #run MP run without saving
         
+        LOGGER.info(f'running database MP parametersearch with {len(self.parameter_sets)} points and {n_workers} workers')
         if n_workers < 2:
             raise ValueError('at least 2 workes are required for database ParameterSearch as one worker is reserved for writing')
         manager = mp.Manager()
         q = manager.Queue()
         pool = mp.Pool(n_workers)
         
+        LOGGER.debug('setting up file-writer')
         watcher = pool.apply_async(self.__write_to_db__,(self,q))
         
         jobs = []
