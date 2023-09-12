@@ -53,7 +53,9 @@ docs/_build/
 # experimental saves  and results
 *.save
 *.png
-
-
+*.dir
+*.bak
+*.pkl
+*.dat
 #slurm studd
 slurm/*
