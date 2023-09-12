@@ -150,6 +150,11 @@ class PETScSolver(ModelSolver):
         'LM': SLEPc.EPS.Which.LARGEST_MAGNITUDE,
     }
 
+    def __init__(self, sparse=True, **solver_kwargs):
+        super().__init__(sparse, **solver_kwargs)
+        self.__petsc_mat_A__ = None
+        self.__petsc_mat_S__ = None
+    
     
     def create_initial_vector(self,vec):
         pass
@@ -170,15 +175,16 @@ class PETScSolver(ModelSolver):
         from petsc4py import PETSc
         from mpi4py import MPI
 
+        p = True if self.__petsc_mat_A__ is None else self.__petsc_mat_A__
+        petsc_A = model.assemble_array(petsc_array=p)
+        self.__petsc_mat_A__ = petsc_A
 
-        A = model.assemble_array(sparse=True)
-        petsc_A = PETSc.Mat().createAIJ(size=A.shape,csr=(A.indptr,A.indices,A.data))
-
-        S = model.make_S_array()
-        if isinstance(S,int) and S == 1:
+        p = True if self.__petsc_mat_S__ is None else self.__petsc_mat_S__
+        petsc_S = model.make_S_array(petsc_array=p)
+        self.__petsc_mat_S__ = petsc_S
+        if isinstance(petsc_S,int) and S == 1:
             petsc_S = None
         else:
-            petsc_S = PETSc.Mat().createAIJ(size=S.shape,csr=(S.indptr,S.indices,S.data))
             petsc_S.assemble()
 
         petsc_A.assemble()
