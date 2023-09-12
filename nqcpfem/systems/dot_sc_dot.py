@@ -170,7 +170,7 @@ class DotSCDot(System):
         
     
     
-    def determine_all_couplings(self,spin_up_I,spin_down_I,solver,E0,parameter_range,verbose_result=False,**crossing_finder_kwargs):
+    def determine_all_couplings(self,spin_up_I,spin_down_I,solver,E0,parameter_range,verbose_result=False,method='custom',**crossing_finder_kwargs):
         #region class constuction
         #make the Classes
         from . import PositionalState,DefiniteTensorComponent
@@ -243,73 +243,144 @@ class DotSCDot(System):
         
         parameter_range = tuple(p+E0 for p in parameter_range)
         
-        #find T
-        LOGGER.info('finding T')
         
-        iterative_model_solver.return_func = lambda x:x[0][0] # T number
-        t_crossing_finder = CrossingFinder(iterative_model_solver,parameter_range,**crossing_finder_kwargs)
         
-        T_sol = t_crossing_finder.minimize(verbose_res=True)
-        LOGGER.debug(f'T_found. N_iter = {len(T_sol.derivs)}')
+        if method == 'custom':
+            #find T
+            LOGGER.info('finding T')
+            
+            iterative_model_solver.return_func = lambda x:x[0][0] # T number
+            t_crossing_finder = CrossingFinder(iterative_model_solver,parameter_range,**crossing_finder_kwargs)
+            
+            T_sol = t_crossing_finder.minimize(verbose_res=True)
+            LOGGER.debug(f'T_found. N_iter = {len(T_sol.derivs)}')
+
+            
+            
+            #find T_so
+            LOGGER.info('finding T_so')
+            iterative_model_solver.return_func = lambda x:x[0][1] #Tso number
+            x_vals = [s[0] for s in iterative_model_solver.saved_results]
+            y_vals = [s[-1][0][1] for s in iterative_model_solver.saved_results]
+            tso_crossing_finder,points = t_crossing_finder.warm_start(T_sol.derivs,iterative_model_solver,x_vals,y_vals,**crossing_finder_kwargs)
+            points = tso_crossing_finder.find_starting_points(points)
+            if isinstance(points,Result):
+                Tso_sol = points
+            else:
+                lp,rp = points 
+                Tso_sol = tso_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
+            
+            LOGGER.debug(f'Tso_found. N_iter = {len(Tso_sol.derivs)-len(T_sol.derivs)}')
+
+            #find D
+            LOGGER.info('finding D')
+            iterative_model_solver.return_func = lambda x:x[0][2] #D number
+            x_vals = [s[0] for s in iterative_model_solver.saved_results]
+            y_vals = [s[-1][0][2] for s in iterative_model_solver.saved_results]
+            D_crossing_finder,points = t_crossing_finder.warm_start(Tso_sol.derivs,iterative_model_solver,x_vals,y_vals,**crossing_finder_kwargs)
+            points = D_crossing_finder.find_starting_points(points)
+            if isinstance(points,Result):
+                D_sol = points
+            else:
+                lp,rp = points 
+                D_sol = D_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
+            
+            LOGGER.debug(f'D_found. N_iter = {len(D_sol.derivs)-len(Tso_sol.derivs)}')
+
+            #find D_so
+            
+            LOGGER.info('finding D_so')
+            iterative_model_solver.return_func = lambda x:x[0][3] #Dso number
+            x_vals = [s[0] for s in iterative_model_solver.saved_results]
+            y_vals = [s[-1][0][3] for s in iterative_model_solver.saved_results]
+            Dso_crossing_finder,points = t_crossing_finder.warm_start(D_sol.derivs,iterative_model_solver,x_vals,y_vals,**crossing_finder_kwargs)
+            points = Dso_crossing_finder.find_starting_points(points)
+            if isinstance(points,Result):
+                Dso_sol = points
+            else:
+                lp,rp = points 
+                Dso_sol=Dso_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
+            
+            
+            LOGGER.debug(f'Dso_found. N_iter = {len(Dso_sol.derivs)-len(D_sol.derivs)}')
+
+            LOGGER.info(f'total number of function calls: {len(iterative_model_solver.saved_results)}')
+            
+            # set the sytem back to what it was before (to avoid mysterious behaviour when working with the system again)
+            self.envelope_model.band_model.independent_vars['preprocessed_array'] = self.envelope_model.band_model.independent_vars['preprocessed_array'].subs(mu_detuning,0)
+            del self.envelope_model.band_model.function_dict[mu_detuning] 
+            
+            
+            return T_sol,Tso_sol,D_sol,Dso_sol
 
         
         
-        #find T_so
-        LOGGER.info('finding T_so')
-        iterative_model_solver.return_func = lambda x:x[0][1] #Tso number
-        x_vals = [s[0] for s in iterative_model_solver.saved_results]
-        y_vals = [s[-1][0][1] for s in iterative_model_solver.saved_results]
-        tso_crossing_finder,points = t_crossing_finder.warm_start(T_sol.derivs,iterative_model_solver,x_vals,y_vals,**crossing_finder_kwargs)
-        points = tso_crossing_finder.find_starting_points(points)
-        if isinstance(points,Result):
-            Tso_sol = points
-        else:
-            lp,rp = points 
-            Tso_sol = tso_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
         
-        LOGGER.debug(f'Tso_found. N_iter = {len(Tso_sol.derivs)-len(T_sol.derivs)}')
+        elif method =='brent':
+            
+            
+            # evaluate the model in the left-most, right-most and center points .
+            iterative_model_solver.return_func = lambda x:x[0][0] # T number
+            init_bracket = []
+            for p in (parameter_range[0],(sum(parameter_range)/2,), parameter_range[1]):
+                init_bracket.append(p)
+                init_bracket.append(iterative_model_solver(p))
+            
+            
+            #find T
+            LOGGER.info('finding T')
+            
+            t_crossing_finder = GoldenCrossingFinder(iterative_model_solver,parameter_range,**crossing_finder_kwargs)
+            
+            T_sol = t_crossing_finder.minimize(*init_bracket)
+            LOGGER.debug(f'T_found. N_iter = {len(T_sol.derivs)}')
 
-        #find D
-        LOGGER.info('finding D')
-        iterative_model_solver.return_func = lambda x:x[0][2] #D number
-        x_vals = [s[0] for s in iterative_model_solver.saved_results]
-        y_vals = [s[-1][0][2] for s in iterative_model_solver.saved_results]
-        D_crossing_finder,points = t_crossing_finder.warm_start(Tso_sol.derivs,iterative_model_solver,x_vals,y_vals,**crossing_finder_kwargs)
-        points = D_crossing_finder.find_starting_points(points)
-        if isinstance(points,Result):
-            D_sol = points
-        else:
-            lp,rp = points 
-            D_sol = D_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
-        
-        LOGGER.debug(f'D_found. N_iter = {len(D_sol.derivs)-len(Tso_sol.derivs)}')
+            
+            
+            #find T_so
+            LOGGER.info('finding T_so')
+            iterative_model_solver.return_func = lambda x:x[0][1] #Tso number
+            x_vals = [s[0] for s in iterative_model_solver.saved_results]
+            y_vals = [s[-1][0][1] for s in iterative_model_solver.saved_results]
+            
+            
+            tso_crossing_finder = GoldenCrossingFinder(iterative_model_solver,parameter_range,**crossing_finder_kwargs)
+            init_bracket = tso_crossing_finder.determine_bracket(x_vals,y_vals)
+            Tso_sol=tso_crossing_finder.minimize(*init_bracket)
+            LOGGER.debug(f'Tso_found. N_iter = {len(Tso_sol.derivs)}')
 
-        #find D_so
-        
-        LOGGER.info('finding D_so')
-        iterative_model_solver.return_func = lambda x:x[0][3] #Dso number
-        x_vals = [s[0] for s in iterative_model_solver.saved_results]
-        y_vals = [s[-1][0][3] for s in iterative_model_solver.saved_results]
-        Dso_crossing_finder,points = t_crossing_finder.warm_start(D_sol.derivs,iterative_model_solver,x_vals,y_vals,**crossing_finder_kwargs)
-        points = Dso_crossing_finder.find_starting_points(points)
-        if isinstance(points,Result):
-            Dso_sol = points
-        else:
-            lp,rp = points 
-            Dso_sol=Dso_crossing_finder.minimize(*lp[:3],*rp[:3],verbose_res = True)
-        
-        
-        LOGGER.debug(f'Dso_found. N_iter = {len(Dso_sol.derivs)-len(D_sol.derivs)}')
+            
 
-        LOGGER.info(f'total number of function calls: {len(iterative_model_solver.saved_results)}')
-        
-        # set the sytem back to what it was before (to avoid mysterious behaviour when working with the system again)
-        self.envelope_model.band_model.independent_vars['preprocessed_array'] = self.envelope_model.band_model.independent_vars['preprocessed_array'].subs(mu_detuning,0)
-        del self.envelope_model.band_model.function_dict[mu_detuning] 
-        
-        
-        return T_sol,Tso_sol,D_sol,Dso_sol
+             #find D
+            LOGGER.info('finding D')
+            iterative_model_solver.return_func = lambda x:x[0][2] #Tso number
+            x_vals = [s[0] for s in iterative_model_solver.saved_results]
+            y_vals = [s[-1][0][2] for s in iterative_model_solver.saved_results]
+            
+            D_crossing_finder = GoldenCrossingFinder(iterative_model_solver,parameter_range,**crossing_finder_kwargs)
+            init_bracket = D_crossing_finder.determine_bracket(x_vals,y_vals)
+            D_sol = D_crossing_finder.minimize(*init_bracket)
+            LOGGER.debug(f'D found. N_iter = {len(D_sol.derivs)}')
 
+           #find Dso
+            LOGGER.info('finding D_so')
+            iterative_model_solver.return_func = lambda x:x[0][3] #Tso number
+            x_vals = [s[0] for s in iterative_model_solver.saved_results]
+            y_vals = [s[-1][0][3] for s in iterative_model_solver.saved_results]
+            
+            
+            Dso_crossing_finder = GoldenCrossingFinder(iterative_model_solver,parameter_range,**crossing_finder_kwargs)
+            init_bracket = Dso_crossing_finder.determine_bracket(x_vals,y_vals)
+            Dso_sol=Dso_crossing_finder.minimize(*init_bracket)
+            LOGGER.debug(f'Dso fund. N_iter = {len(Dso_sol.derivs)}')
+            LOGGER.info(f'total number of function calls: {len(iterative_model_solver.saved_results)}')
+            
+            # set the sytem back to what it was before (to avoid mysterious behaviour when working with the system again)
+            self.envelope_model.band_model.independent_vars['preprocessed_array'] = self.envelope_model.band_model.independent_vars['preprocessed_array'].subs(mu_detuning,0)
+            del self.envelope_model.band_model.function_dict[mu_detuning] 
+            
+            
+            return T_sol,Tso_sol,D_sol,Dso_sol
         """
         # evaluate the model at the golden ratio points so that we can determine the initial brcaket
         golden_mean = 0.5*(3-np.sqrt(5))
@@ -717,3 +788,57 @@ class CrossingFinder():
         new.derivs = new_points
         return new,new_points
 
+
+
+def GoldenCrossingFinder():
+    
+    
+    def __init__(self,func,x_range,max_iter=18,x_tol=1e-3):
+        self.func = func
+        self.x_range = x_range
+        self.max_iter = max_iter
+        self.x_tol = x_tol
+    def minimize(self,xL,fL,xM,fM,xR,fR):
+        from scipy.optimize._optimize import Brent
+        brent = Brent(self.func,max_iter=self.max_iter,full_output=True)
+        
+        def override_bracket_constructor(*args):
+            return (xL,xM,xR,fL,fM,fR,0) # 0 is func_calls
+        
+        brent.get_bracket_info = override_bracket_constructor
+        
+        brent.optimize()
+        
+        res = Result(brent.xmin,brent.fval,[],[],list(range(brent.func_calls)))
+        return res
+
+    
+    
+    @staticmethod
+    def determine_bracket(x_vals,f_vals):
+        x_vals = np.asarray(x_vals)
+        f_vals = np.asarray(f_vals)
+        
+        
+        if len(x_vals)<3:
+            raise ValueError('we need at least 3 points to determine a bracket')
+            
+            
+        #find the smallest two y_vals and return the corresponding x_vals
+        
+        sorted_x_vals = x_vals[np.argsort(f_vals)] 
+        sorted_f_vals = np.sort(f_vals)
+        for x_middle_i in range(0,len(x_vals)):
+            greater = np.where(sorted_x_vals > sorted_x_vals[x_middle_i])[0]    
+            less = np.where(sorted_x_vals < sorted_x_vals[x_middle_i])[0]
+            if len(greater) and len(less):
+                left = (sorted_x_vals[less[0]],sorted_f_vals[less[0]])
+                middle = (sorted_x_vals[x_middle_i],sorted_f_vals[x_middle_i])
+                right = (sorted_x_vals[greater[0]],sorted_f_vals[greater[0]])
+                break
+        
+        else:
+            raise ValueError('unable to find bounds for points: {x_vals}, {f_vals}')
+        
+        return left+middle+right
+        
