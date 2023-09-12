@@ -561,7 +561,8 @@ class CrossingFinder():
                 LOGGER.debug((left_deriv,right_deriv,delta,sigma,(0.5+delta/(2*sigma)),(0.5-delta/(2*sigma))))
                 x = x_new
             prev_xs = np.array([m[0] for m in maxima] + [m[0] for m in self.derivs])
-            if any(np.isclose(x,prev_xs,atol=self.deriv_step)):
+            if any(np.isclose(x,prev_xs,atol=self.deriv_step)) and not np.abs(xR-xL)<2*self.x_tol*(self.x_range[1]-self.x_range[0]):
+                # if point is too close to an already evalated point (except for case where left and right are super close)
                 point = prev_xs[np.isclose(x,prev_xs,atol=self.deriv_step)]
                 LOGGER.debug(f'already seen: {point}. shifting the point')
                 if not isinstance(point,float):
@@ -571,6 +572,8 @@ class CrossingFinder():
                 else:
                     x += -2*self.deriv_step
 
+            
+            
             LOGGER.debug(f'relative {(x-x_old)/(self.x_range[1]-self.x_range[0])}')
             deriv=self.derivative_check(x,return_derivs=True)
             LOGGER.debug(f'deriv: {(i,deriv,x)}')

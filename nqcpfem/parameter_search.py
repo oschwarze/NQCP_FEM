@@ -134,17 +134,23 @@ class MPParameterSearch(ParameterSearch):
     def run_func(args):#inst,param_set,skip_errors):
         param_set,inst,skip_errors,save_results,i = args
         param_set = inst._param_set_preprocessing_(param_set)
-
+        base_dir = os.path.dirname(inst.save_file)
+        if not len(base_dir):
+            base_dir = os.getcwd()       
+        
+        dir_name = base_dir + '/partial_results/'
+        filename = dir_name+f'result_{i}_{inst.save_file}'
+        if os.path.exists(filename):
+            LOGGER.info(f'found previous result: {filename}')
+            with open(filename,'rb') as f:
+                result = pkl.load(f)
+            return result
         try:
             LOGGER.debug(f'running multiprocessing evaluation for element {i}')
             result = inst.evaluation_function(*param_set[0],**param_set[1])
             print(f'result: {result}')    
             if save_results:
-                base_dir = os.path.dirname(inst.save_file)
-                if not len(base_dir):
-                    base_dir = os.getcwd()
-                dir_name = base_dir + '/partial_results/'
-                filename = dir_name+f'result_{i}_{inst.save_file}'
+
                 with open(filename,'wb') as f:
                     pkl.dump(result,f)
             return result
