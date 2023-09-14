@@ -237,12 +237,35 @@ class DotSCDot(System):
                 
             return (vals,res)
             
-        iterative_model_solver = IntermediateResSave(model_update,solver,evaluation_func,return_func=lambda x:x)
+        iterative_model_solver = IntermediateResSave(model_update,solver,evaluation_func,return_func=lambda x:x[1])
         #endregion
         
         
         parameter_range = tuple(p+E0 for p in parameter_range)
-        
+        if method == 'new':
+            
+            ranges = crossing_preprocessing(E0*1.01,left_up,right_up,right_down,right_h_up,right_h_down,iterative_model_solver,self)
+
+            #determine the values at the boundaries to begin with so we don't have to compute these ourselves
+            iterative_model_solver.return_func = lambda x:x[0]
+            boundaries = {}
+            for r in ranges:
+                for v in r:
+                    if v not in boundaries:
+                        boundaries[v]= iterative_model_solver(v)
+            
+            solutions = []
+            for i,r in enumerate(ranges):
+                LOGGER.debug(f'run {i}')
+                xL,fL= r[0],boundaries[r[0]][i]
+                xR,fR = r[1],boundaries[r[1]][i]
+                print(xL,fL,xR,fR)
+                iterative_model_solver.return_func = lambda x: x[0][i]
+                finder = CrossingFinder(iterative_model_solver,r,**crossing_finder_kwargs)
+                solutions.append(finder.minimize(xL,fL,xR=xR,fR=fR,verbose_res = True ))
+            
+            
+            return tuple(solutions)
         
         
         if method == 'custom':
@@ -313,9 +336,6 @@ class DotSCDot(System):
             
             return T_sol,Tso_sol,D_sol,Dso_sol
 
-        
-        
-        
         elif method =='brent':
             
             
@@ -824,7 +844,7 @@ class GoldenCrossingFinder():
         
         brent.optimize()
         
-        res = Result(brent.xmin,brent.fval,[],[],list(range(brent.funcalls)))
+        res = Result(self.scipy_to_x(brent.xmin),self.y_scale*brent.fval,[],[],list(range(brent.funcalls)))
         return res
 
     
@@ -883,3 +903,37 @@ class GoldenCrossingFinder():
         res = self.func(scaled_x)
         print(scaled_x,res)
         return res/self.y_scale
+    
+    
+    
+    
+    
+def crossing_preprocessing(E0,Vsweep,Pup,Pdown,Aup,Adown,solution_func,system):
+    init_run= solution_func(E0)
+    
+    # determine Ec and Emax
+    
+    Emax = np.max(init_run[0]) # get maximum detuning reltive to E0
+    X_points= system.envelope_model.positional_rep(init_run[1][0])[1]
+    Vsweep_i = system.select_subspace((Vsweep,),init_run[1],1,x_points=X_points)[0]
+    
+    Ec = E0-init_run[0][Vsweep_i]
+    
+    ranges = []
+    for vec in (Pup,Pdown,Adown,Aup):
+        vec_i = system.select_subspace((vec,),init_run[1],1,x_points=X_points)[0]
+        Esign = np.sign(init_run[0][vec_i])
+        if Esign > 0 :
+            # we have to increase energy in order to get crossing
+            ranges.append((Ec,Ec+Emax*0.99))
+        elif Esign < 0:
+            # we have to decrease 
+            ranges.append((Ec-Emax*0.99,Ec))
+
+    LOGGER.debug(ranges)
+    return ranges 
+
+    
+            
+            
+            
