@@ -272,7 +272,6 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 #we need to scale the input
                 scaled_func=lambda x:func(x*self.length_scale())
                 f.interpolate(scaled_func)
-                print(scaled_func)
                 converted_funcs[sym] = f 
         return symbolic_funcs,converted_funcs   
     
@@ -302,7 +301,6 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         scalar_function_space = self.__make_function_space__(self.mesh(),self.independent_vars['function_class'],1) # interpolate the scalar functions as the same class as the trial and test functions
         for sym,func in new_param_dict.items():
             if sym.name[-3:] == '(x)':
-                print('here')
                 if isinstance(func,sympy.Piecewise):
                     # we have to traverse through any sympy piecewise functions and convert them, since UFL stuff cannot handle regular comparison operators. 
                     # NB! There should'nt be any free symbols other than those contained in parameter_dict and constants as wells as x,y, and z in the piecewise expression.
@@ -799,8 +797,8 @@ class FEniCsObservable(AbstractObservable):
         super().__init__(operator, envelope_model)
 
         # we can already assemble ufl form and just substitute the functions when mel or apply are called
-        self.left_v = dolfinx.fem.Function(self.envelope_model.function_space())
-        self.right_v =dolfinx.fem.Function(self.envelope_model.function_space())
+        self.left_v = dolfinx.fem.Function(self.envelope_model.function_space(),name='vl')
+        self.right_v =dolfinx.fem.Function(self.envelope_model.function_space(),name='vr')
         from . import symbolic as symb
         symbols = (symb.X,symb.Y,symb.Z,symb.Kx,symb.Ky,symb.Kz)
         
@@ -813,7 +811,6 @@ class FEniCsObservable(AbstractObservable):
         tensor_repr = bm.BandModel.__make_tensor_dict__(aranged_O,self.envelope_model.band_model.spatial_dim)
         
         # bring the tensors to the correct shape.
-        
         self.ufl_tensors = {}
         for order,arr in tensor_repr.items():
             
@@ -833,6 +830,18 @@ class FEniCsObservable(AbstractObservable):
                 big_tensor +=tensor # allows for posibility of changing datatype
             
             if (big_tensor != 0).any():
+                # extend te shape of tensor.
+                required_shape = self.envelope_model.band_model.tensor_shape
+                if big_tensor.shape != required_shape:
+                    save_shape = big_tensor.shape
+                    missing =required_shape[len(big_tensor.shape)::2]# we can only suffix
+                    for m in missing:
+                        big_tensor = np.tensordot(big_tensor,np.eye(m),axes=0)
+                
+                if big_tensor.shape != required_shape:
+                    raise ValueError(f'unable to extend tensor of shape {save_shape} to the required shape: {required_shape}')
+                
+                
                 self.ufl_tensors[order] = ufl.as_tensor(big_tensor/(self.envelope_model.length_scale()**order))
             
         
