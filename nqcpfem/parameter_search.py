@@ -218,6 +218,10 @@ class DBMPParameterSearch(DBParameterSearch,MPParameterSearch):
     @staticmethod
     def run_func(args,q):
         param_set,inst,skip_errors,save_results,i = args 
+        with inst.__db__() as db:
+            if str(i) in db.keys():
+                LOGGER.info(f'element {i} was found in the database. Skipping')
+                return i
         result =MPParameterSearch.run_func((param_set,inst,skip_errors,False,i)) # do not save the results in the old way
         LOGGER.debug(f'sending element {i} to file-writer')
         q.put((i,result))
@@ -263,7 +267,7 @@ class DBMPParameterSearch(DBParameterSearch,MPParameterSearch):
         for job in jobs:
             job.get()
         LOGGER.debug('killing listener')
-        q.put('kill')
+        q.put((0,'kill'))
         pool.close()
         pool.join()
         
