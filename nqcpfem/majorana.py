@@ -19,7 +19,7 @@ def find_majoranas(solution,model:EnvelopeFunctionModel):
         raise ValueError(f'No time-reversal change of basis has been defined for the band model: {type(model.band_model)}')
     
     n= tr.shape[0]
-    U = E = sympy.Array([[0]*n + l.tolist() for l in -1*tr]+[l.tolist()+[0]*n for l in tr ])
+    U = E = sympy.Array([[0]*n + l.tolist() for l in 1*tr]+[l.tolist()+[0]*n for l in tr ]) # minus 1 in the upper irght block ?
     
     U_op = model.construct_observable(U)
     
@@ -37,5 +37,5 @@ def find_majoranas(solution,model:EnvelopeFunctionModel):
     LOGGER.debug(f'eigen decomposition: {parity_evals}, {parity_evecs}')
     
     disentangled_vectors = np.einsum('ij,i... -> j...',parity_evecs,relevant_vectors)
-    return disentangled_vectors
+    return disentangled_vectors,(parity_evals,parity_evecs)
     
