@@ -785,11 +785,6 @@ class IterativeModelSolver():
         print(self._i)
         model = self.construction_func(*args,**kwargs)
         
-        if self.prev_result is not None:
-            # make initial guess as linear combination of all the previous ones 
-            initial_vec = np.sum(self.prev_result[1],axis=0)
-            
-            self.solver.solver_kwargs['initial_guess'] = initial_vec
             
         res = self.solver.solve(model)
         
