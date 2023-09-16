@@ -1,4 +1,5 @@
 from abc import ABC,abstractmethod
+from re import A
 from .envelope_function import EnvelopeFunctionModel
 from typing import Tuple
 
@@ -142,6 +143,8 @@ class PETScSolver(ModelSolver):
         'LYAPII':SLEPc.EPS.Type.LYAPII,
         'LAPACK':SLEPc.EPS.Type.LAPACK
     }
+    spetrac_transform = {'shift_invert':SLEPc.ST.Type.SINVERT,
+                         'q':0}
 
     which_conversion = {
         'SA': SLEPc.EPS.Which.SMALLEST_REAL,
@@ -156,10 +159,18 @@ class PETScSolver(ModelSolver):
         self.__petsc_mat_S__ = None
     
     
-    def create_initial_vector(self,vec):
+    def create_initial_vector(self,vecs,array_size,model:EnvelopeFunctionModel):
         pass
         from petsc4py import PETSc
-        petsc_vec = PETSc.Vec().createWithArray(vec)
+        import numpy as np
+        #TODO: check if a single vector or multipl are passed by comparing length of vector (number of elements with size of array)
+        if vecs.shape[0] != array_size[0]:
+            initial_vec = np.sum(vecs,axis=0)
+        else:
+            initial_vec = vecs
+        
+        flattened = model.flatten_eigentensors(initial_vec)
+        petsc_vec = PETSc.Vec().createWithArray(flattened)
         return petsc_vec
         
 
@@ -195,7 +206,10 @@ class PETScSolver(ModelSolver):
         if self.solver_kwargs.get('sigma',None) is not None:
             # do shift invert
             spectral_transform = SLEPc.ST().create()
-            spectral_transform.setType(SLEPc.ST.Type.SINVERT)
+            if self.solver_kwargs.get('method','krylovschur') == 'GD':
+                spectral_transform.setType(SLEPc.ST.Type.PRECOND)
+            else:
+                spectral_transform.setType(SLEPc.ST.Type.SINVERT)
             eig_problem.setST(spectral_transform)
             if self.solver_kwargs.get('which','LM') == 'LM':
                 eig_problem.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
@@ -206,19 +220,33 @@ class PETScSolver(ModelSolver):
         LOGGER.debug(f'solving problem:')
         eig_problem.setDimensions(self.solver_kwargs['k']) # number of eigenvalues to find
         eig_problem.setProblemType(SLEPc.EPS.ProblemType.GHEP) # hermitian eigenvalue problem
-        eig_problem.setType(self.solver_kwargs.get('method',self.solver_methods['krylovschur'])) # set method for solving
-        eig_problem.setOperators(petsc_A,petsc_S) # define matrices of the problem
+        eig_problem.setType(self.solver_methods[self.solver_kwargs.get('method','krylovschur')]) # set method for solving
 
+        if self.solver_kwargs.get('method','krylovschur') == 'GD':
+            eig_problem.setGDDoubleExpansion(True)
+
+        
+        eig_problem.setOperators(petsc_A,petsc_S) # define matrices of the problem
+        print(petsc_A.size)
         if 'initial_guess' in self.solver_kwargs:
-            eig_problem.setInitialSpace(self.create_initial_vector(self.solver_kwargs['initial_guess']))
-        
-        
+            if self.solver_kwargs.get('method','krylovschur') == 'krylovschur':
+                initial_vecs = [self.create_initial_vector(self.solver_kwargs['initial_guess'],petsc_A.size,model)]
+                initial_vecs[0].assemble()
+                eig_problem.setInitialSpace(initial_vecs[0])
+            else:
+                initial_vecs = [PETSc.Vec().createWithArray(vec) for vec in model.flatten_eigentensors(self.solver_kwargs['initial_guess'])]
+                for vec in initial_vecs:
+                    vec.assemble()
+                eig_problem.setInitialSpace(initial_vecs)
+        else:
+            initial_vecs = []
         try:
             eig_problem.solve()
         except Exception as err:
             if err.args == (71,):
                 raise Exception('This can occur when the magnitude of the array elements span many orders of magnitude. Check that all numerical values are correct') from err
             else:
+                print(err.args)
                 raise err
 
         vr, vi = petsc_A.createVecs()
@@ -252,10 +280,29 @@ class PETScSolver(ModelSolver):
             petsc_S.destroy()
         if self.solver_kwargs.get('sigma',None) is not None:
             spectral_transform.destroy()
-            
+
+        for vec in initial_vecs:
+            vec.destroy()
+        
         return eigenvalues,eigenvectors
 
-
+class IterativeSolver(ModelSolver):
+    def __init__(self,first_solver:ModelSolver,second_solver:ModelSolver|None=None):
+        # Solver that uses the results of the previous solve to solve the next problem. ca be configured such that the very first solving is
+        # computed in a different way
+        self.first_solver = first_solver
+        self.second_solver = first_solver if second_solver is None else second_solver
+        self.result_vecs = None
+        
+    def solve(self,model):
+        if self.result_vecs is None:
+            new_res = self.first_solver.solve(model)
+            self.result_vecs = new_res[1]
+        else:
+            self.second_solver.solver_kwargs['initial_guess'] = self.result_vecs
+            new_res = self.second_solver.solve(model)
+            self.result_vecs = new_res[1]
+        return new_res
 
 
 
