@@ -539,7 +539,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         self._bilinear_form = dolfinx.fem.form(L)
     """
     
-    @auto_update
+    #@auto_update
     def infinite_boundary_vec(self):
         """Constructs a diagonal array which takes an `infinite` (i.e. very large ) value on the points that are on the boundary of the domain
         """
@@ -557,7 +557,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         from scipy.sparse import diags
         return diags(u_boundary.vector.getArray(),offsets=0,format='csr')
     
-    @auto_update
+    #@auto_update
     def __make_unassembled_array__(self):
         LOGGER.debug('creating PETSc Matrix')
         try:
@@ -584,7 +584,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
             return petsc_A.copy() # create a new copy
         
 
-    @auto_update
+    #@auto_update
     def __assemble_petsc_array__(self, sparse=True): # only use old solution of user knows what he is doing!
         """ This metho actull cnstructs the assembled array, but since petsc matrices can be altered, we have to protect te output of this in order t guarantee tha it can be reused without having been altered"""
         
