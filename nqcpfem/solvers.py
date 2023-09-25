@@ -190,6 +190,7 @@ class PETScSolver(ModelSolver):
         petsc_A = model.assemble_array(petsc_array=p)
         #self.__petsc_mat_A__ = petsc_A
 
+
         p = True if self.__petsc_mat_S__ is None else self.__petsc_mat_S__
         petsc_S = model.make_S_array(petsc_array=p)
         #self.__petsc_mat_S__ = petsc_S
@@ -245,6 +246,11 @@ class PETScSolver(ModelSolver):
         except Exception as err:
             if err.args == (71,):
                 raise Exception('This can occur when the magnitude of the array elements span many orders of magnitude. Check that all numerical values are correct') from err
+            elif err.args == (95,):
+                LOGGER.info('eigenproblem solvin with initial_guess failed. retrying with random initial guess')
+                old_kwargs = self.solver_kwargs.copy()
+                del self.solver_kwargs['initial_guess']
+                return self.solve(model)
             else:
                 print(err.args)
                 raise err

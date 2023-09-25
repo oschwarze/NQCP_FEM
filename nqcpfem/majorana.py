@@ -14,12 +14,14 @@ def find_majoranas(solution,model:EnvelopeFunctionModel):
     
     tr = model.band_model.__time_reversal_change_of_basis__ 
     # parity operator is [0,-i*O,i*O,0] where O is the time-reversal operator (for fermions. For bosons there is no minus sign because O^-1 = O)
+
     
     if tr is None:
         raise ValueError(f'No time-reversal change of basis has been defined for the band model: {type(model.band_model)}')
     
     n= tr.shape[0]
     U=sympy.Array([[0]*n + l.tolist() for l in -1j*tr]+[l.tolist()+[0]*n for l in 1j*tr ]) 
+
     
     # the operator to construct the majorana pairs are 1/sqrt(2)*(1 \pm U) 
     I = sympy.Array(sympy.eye(n))
@@ -40,7 +42,7 @@ def find_majoranas(solution,model:EnvelopeFunctionModel):
     
     # project the parity operator down to ti subspace an diagonaize it:
     
-    U_proj = U_op.mel(relevant_vectors,relevant_vectors)
+    U_proj = U_op.mel(relevant_vectors,np.conj(relevant_vectors)) # we complex conjugate the right hand vectors as dictated by complex conjugation operator
     LOGGER.debug(f'U_proj: {U_proj}')
     parity_evals,parity_evecs = np.linalg.eig(U_proj) 
     LOGGER.debug(f'eigen decomposition: {parity_evals}, {parity_evecs}')
