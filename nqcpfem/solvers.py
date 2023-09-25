@@ -188,7 +188,8 @@ class PETScSolver(ModelSolver):
 
         p = True if self.__petsc_mat_A__ is None else self.__petsc_mat_A__
         petsc_A = model.assemble_array(petsc_array=p)
-        # self.__petsc_mat_A__ = petsc_A
+        #self.__petsc_mat_A__ = petsc_A
+
 
         p = True if self.__petsc_mat_S__ is None else self.__petsc_mat_S__
         petsc_S = model.make_S_array(petsc_array=p)
