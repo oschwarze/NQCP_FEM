@@ -69,7 +69,7 @@ def majorana_overlap(state,model:FEniCsModel):
     i,j,k,l,m,n = ufl.indices(6)
     phi_p = sq*f[i,k]+P[i,j]*ufl.conj(f[j,k])
     phi_m = sq*f[l,n]-P[l,m]*ufl.conj(f[m,n])
-    i,j,k,l = ufl.indices(4)
+    
     prob_p = phi_p*ufl.conj(phi_p)
     prob_m = phi_m*ufl.conj(phi_m)
     
@@ -82,4 +82,23 @@ def majorana_overlap(state,model:FEniCsModel):
     
     dolfinx_form = dolfinx.fem.form(ufl_form)
     return dolfinx.fem.assemble_scalar(dolfinx_form)
+
+
+
+def majorana_overlap_bound(state_0,state_1,model:FEniCsModel):
+    V = model.function_space()
+    f = dolfinx.fem.Function(V)
+    g = dolfinx.fem.Function(V)
+
+    i,j = ufl.indices(2)
+    ip = f[i,j]*ufl.conj(g[i,j])
+    
+    ufl_form= ufl.sqrt(ip*ufl.conj(ip))*ufl.dx # integrate |<f|g>| over all of space. different from usual inner produt because we have absolute values!
+     
+    f.x.array[:] = model.flatten_eigentensors(state_0)
+    g.x.array[:] = model.flatten_eigentensors(state_1)
+    
+    dolfinx_form = dolfinx.fem.form(ufl_form)
+    return dolfinx.fem.assemble_scalar(dolfinx_form)
+
     
