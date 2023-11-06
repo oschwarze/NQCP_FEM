@@ -101,6 +101,30 @@ def plot_function(func,function_space,rescale=True,length_scale=1,show_xy_plane=
 
     p.show()
 
+
+def plot_interpolated_scalar(scalar,function_space):
+    p = pyvista.Plotter()
+    from .fenics import FEniCsModel
+    if isinstance(function_space,FEniCsModel):
+        length_scale = function_space.length_scale()
+        function_space=function_space.function_space() #create function_space
+    topology, cell_types, x = dolfinx.plot.create_vtk_mesh(function_space)
+    grid = pyvista.UnstructuredGrid(topology, cell_types, x)
+    grid["u"] = scalar
+    warped = grid.warp_by_scalar("u")
+    p.add_mesh(warped, scalars='u')
+    p.show_axes()
+    """
+    if show_xy_plane:
+        mesh = pyvista.Plane()
+        mesh.point_data.clear()
+        p.add_mesh(mesh,show_edges=True)
+    if return_plotter:
+        return p
+    """
+    p.show()
+
+
 def HH_LH_components(eigenvector):
     """
     Compute the HH and LH components of the eigenvector
