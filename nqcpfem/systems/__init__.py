@@ -65,6 +65,21 @@ class DefiniteTensorComponent(BoolState):
         return super().__init__(name,spinor_projection)
     
 
+class SpinorProjection(BoolState):
+    def __init__(self,spinor_state,name,axis=0):
+        self.spinor_state= spinor_state
+        self.axis=axis
+
+        return super().__init__(name,self.spinor_basis_projection)
+    
+    def spinor_basis_projection(self,state,**kwargs):
+        state_index = tuple(range(len(state.shape)))
+        sum_index = state_index[self.axis:self.axis+len(self.spinor_state.shape)]
+        if state.shape[self.axis:self.axis+len(self.spinor_state.shape)] != self.spinor_state.shape:
+            raise ValueError(f'shape mismatch for spinor projection and state {self.spinor_state.shape} vs {state.shape[self.axis:self.axis+len(self.spinor_state.shape)]}')
+        return np.einsum(self.spinor_state.conj(),sum_index,state,state_index)
+
+
 class PositionalState(BoolState):
     def __init__(self,positional_condition,name,x_points=None):
         # convert the positional_condition to 
@@ -90,9 +105,8 @@ class PositionalState(BoolState):
         return np.einsum('...x,x->...x',vector,mask)
 
 
-class System(ABC):
 
-    
+class System(ABC):
     def __init__(self,envelope_model:EnvelopeFunctionModel,state_classes:tuple[StateClass]):
         self.__envelope_model__ = envelope_model
         self.state_classes = state_classes
@@ -118,22 +132,31 @@ class System(ABC):
             classification[self.state_classes[np.argmax(projections)]].append(psi)
             
         return classification
+    
+    
+    
+    def subspace_weights(self,subspace_classes,eigenstates,**proj_kwargs):
+        """
+        Given a subspace compute the proection magnitue of the eigenstates.
+        Returns an array 
+        
+        """              
+        weights = []
+        for psi in eigenstates:
             
+            projections = np.array([np.linalg.norm(c.project(psi,**proj_kwargs))
+            for c in subspace_classes])
+            weights.append((projections/np.linalg.norm(psi))**2)   
+        return np.stack(weights)
     def select_subspace(self,subspace_classes,eigenstates,subspace_dim,**proj_kwargs):
         """ Given a set of Stateclasses defining a certain subspace of the eigenstates of the system, 
         determine the `subspace_dim` number of eigenstates in the supplied `eigenstates` that lie the most in this subspace. 
         """
         # determiene wei
         
+        weights = self.subspace_weights(subspace_classes,eigenstates,**proj_kwargs)
         
-        weights = []
-        for psi in eigenstates:
-            projections = [np.abs(inner_product(psi,c.project(psi,**proj_kwargs)))
-                           for c in subspace_classes]
-            weights.append(np.linalg.norm(projections)/np.linalg.norm(psi))   
-        
-        
-        sort_I = np.argsort(weights)
+        sort_I = np.argsort(np.linalg.norm(w,axis=1))
         
         
         return sort_I[-subspace_dim:]
@@ -147,7 +170,7 @@ class System(ABC):
     
 
     
-    def find_avoided_crossing(self,solver,subspace_classes,parameters,parameter_bounds=None,return_minimization_instance=False,iterative_solving=True,**minimization_kwargs):
+    def find_avoided_crossing(self,solver,subspace_classes,parameters,parameter_bounds=None,return_minimization_instance=False,iterative_solving=True,energy_method=False,**minimization_kwargs):
         """ Find an avoided crossing of energy levels in the system, by varying the prameters and minimizing the energy difference. The initial guess for the minimization is the parameter_dict of the model
         :param solver: the solver to use to determine the eigenstates of the system
         :param subspace_classes: tuple of StateClasses which define the 2D subspace of interest
@@ -156,14 +179,39 @@ class System(ABC):
         :param minimization_kwargs: Kwargs that are passed to `scipy.optimize.minimize`.
         """
         
+        prev_energies = [None,None] # stores the (sorted) energies of the two states in focus between runs. If energy_method is true, the next states are chosen as to minimize the difference in energies between runs
+        
+        def energy_continuity(energies):
+            delta1 = np.abs(energies[0]-prev_energies)     
+            delta2 = np.abs(energies[1]-prev_energies)
+            # find the energies that minimize the difference and 
+            
+            min_Is = (np.argmin(delta1),np.argmin(delta2))
+            if min_Is[0] == min_Is[1]:
+                l = delta1 if delta1[min_Is[0]]>delta2[min_Is[0]] else delta2
+                sort_l = np.argsort(l)
+                min_Is = (min_Is[0],sort_l[1])
+                
+            return np.array(min_Is)
+                
+                
+            
+            
+            
+        
         
         def model_update(parameters):
             self.envelope_model.band_model.parameter_dict.update(parameters)
             return self.envelope_model
         
         def res_post_processing(model,res):
+    
             X_arr = self.envelope_model.positional_rep(res[1][0])[1]
-            subspace_I = self.select_subspace(subspace_classes,res[1],2,x_points=X_arr)
+            if energy_method and prev_energies[0] is not None:
+                subspace_I = energy_continuity(res[0])
+            else:    
+                subspace_I = self.select_subspace(subspace_classes,res[1],2,x_points=X_arr)
+            prev_energies = (res[0][subspace_I[0]],res[0][subspace_I[0]])
             
             return np.abs(res[0][subspace_I[0]]-res[0][subspace_I[1]])
         
@@ -180,10 +228,12 @@ class System(ABC):
                 
                 solution = solver.solve(self.envelope_model)
                 X_arr = self.envelope_model.positional_rep(solution[1][0])[1]
+                if energy_method and prev_energies[0] is not None:
+                    subspace_I = energy_continuity(solution[0])
+                else:    
+                    subspace_I = self.select_subspace(subspace_classes,solution[1],2,x_points=X_arr)
                 
-                
-                subspace_I = self.select_subspace(subspace_classes,solution[1],2,x_points=X_arr)
-                
+                prev_energies = (solution[0][subspace_I[0]],solution[0][subspace_I[0]])
                 return np.abs(solution[0][subspace_I[0]]-solution[0][subspace_I[1]])
 
         
@@ -202,4 +252,8 @@ class System(ABC):
             return minimization
         return min
         
+
+
+
+
 # Class which can be passed to scipy's minimize and acts like a function in order to determine the crossing

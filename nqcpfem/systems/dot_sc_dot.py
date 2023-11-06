@@ -1,5 +1,5 @@
 from nqcpfem.solvers import ModelSolver
-from . import System,StateClass
+from . import SpinorProjection, System,StateClass
 import sympy
 from collections import namedtuple
 import numpy as np
@@ -22,8 +22,7 @@ from ..functions import X,Y,Z
 
 class DotSCDot(System):
     def __init__(self,envelope_model:EnvelopeFunctionModel,left_dot:Dot,left_barrier:Barrier,superconductor:Superconductor,right_barrier:Barrier|None = None,right_dot:Dot|None = None,domain_resolution =None):
-        
-        envelope_model = copy(envelope_model)        
+        envelope_model = copy(envelope_model)     
         self.left_dot = left_dot
         self.left_barrier = left_barrier
         
@@ -170,28 +169,150 @@ class DotSCDot(System):
         
     
     
-    def determine_all_couplings(self,spin_up_I,spin_down_I,solver,E0,parameter_range,verbose_result=False,method='custom',**crossing_finder_kwargs):
+    def perturbative_selection_couplings(self,basis_states,solver,E0,parameter_range,method,**crossing_finder_kwargs):
+        """
+        determine T,Tso,D and Dso coupling between the dots of the system, by taking a dict of states as the reference states.
+        :param basis_states: dict with strings: "plu,pru,prd,hru,hrd,"
+        """
+            
+        mu_L = sympy.Dummy(r'\mu_{L}') # make them dummies to avoid overwriting them 
+        mu_R = sympy.Dummy(r'\mu_{R}')
+        mu_detuning = sympy.Dummy('\mu_{detuning}(x)',commutative=False)
+        detuning = SymbolicFunction(sympy.Piecewise((-mu_L,self.domains['ld_in']),(-mu_R,self.domains['rd_in']),(0,True)),mu_detuning)
+        
+        self.envelope_model.band_model.add_potential(detuning)
+        self.envelope_model.band_model.parameter_dict[mu_L] = E0
+        self.envelope_model.band_model.parameter_dict[mu_R] = E0
+        
+        def model_update(mu_R_val):
+            params = {mu_R:mu_R_val}
+            self.envelope_model.band_model.parameter_dict.update(params)
+            return self.envelope_model
+        
+        
+        if any(w not in basis_states for w in ('plu','pru','prd','hru','hrd')):
+            raise KeyError(f"the basis states dice must have the following keys: {('plu','pru','prd','hru','hrd')}")
+        
+        parameter_range = tuple(p+E0 for p in parameter_range)
+        if method == 'signed':
+            
+            from nqcpfem.parameter_search import IterativeModelSolver
+            
+            simple_it_solver=IterativeModelSolver(model_update,solver)
+            subspaces = (('plu','pru'),('plu','prd'),('plu','hrd'),('plu','hru')) # T, Tso,D,Dso
+            # apply preprocessing: divide x_range into 100 pieces and make this the unit scale of energy
+            
+            E_scale = (parameter_range[1]-parameter_range[0])/100
+            LOGGER.debug(f'E_scale: {E_scale}')
+            xL = parameter_range[0]/E_scale
+            xR = parameter_range[1]/E_scale
+
+            #normalize the states
+            for k,v in basis_states.items():
+                norm= np.linalg.norm(v)
+                if not np.isclose(norm,1):
+                    basis_states[k] = v/np.linalg.norm(v)
+
+            #this contains the subspaces we wish to compute the overlaps wrt. They are already conjugated!
+            subspace_stacks_conj = {N: np.stack([basis_states[N[0]],basis_states[N[1]]]).conj() for N in subspaces}
+
+            def overlap_func(evecs,target_states):
+                
+                #compute in the regular way
+                sum_index = tuple(range(2,len(evecs.shape)+1))
+                weights = np.abs(np.einsum(subspace_stacks_conj[target_states],(0,)+sum_index,evecs,(1,)+sum_index))**2
+                return weights
+                
+                
+            
+            def eval_func(x):
+                #convert energy back
+                x_real = x*E_scale
+                evals,evecs = simple_it_solver(x_real)
+                #cast the energies to to the specified energy_scale
+                evals = evals/E_scale
+                
+                #normalisze the eigenvectors:
+                norms = np.linalg.norm(evecs.reshape(evecs.shape[0],-1),axis=1)
+                # add newaxis untill we have the right shape:
+                while len(norms.shape)<len(evecs.shape):
+                    norms = norms[...,np.newaxis] 
+                evecs = evecs/norms
+                return evals,evecs
+            
+            S = SignedSearch(xL,xR,eval_func,1e-2,subspaces,overlap_func) 
+            res = S.minimize()
+            
+            
+            # set the system back to what it was before (to avoid mysterious behaviour when working with the system again)
+            self.envelope_model.band_model.independent_vars['preprocessed_array'] = self.envelope_model.band_model.independent_vars['preprocessed_array'].subs(mu_detuning,0)
+            del self.envelope_model.band_model.function_dict[mu_detuning] 
+            
+            
+            #cast the result back to real units
+            result = [r['val']*E_scale/2 for r in res]
+            return result
+            
+            
+            
+    def determine_all_couplings(self,spin_up_I,spin_down_I,solver,E0,parameter_range,verbose_result=False,method='custom',energy_method=False,**crossing_finder_kwargs):
+        """
+        Determine the T,Tso,D and Dso coupling of the two dots in the system
+        :param int|np.ndarray spin_up_I: either the index of the spin up component or a spinor specifying the spin up state 
+        :param int|np.ndarray spin_down_I: either the index of the spin down component or a spinor specifying the spin down state 
+        
+        """
         #region class constuction
         #make the Classes
         from . import PositionalState,DefiniteTensorComponent
-        mask_template = lambda x: np.zeros(self.envelope_model.solution_shape()[:-1])
-        up_p_mask = mask_template(None)
-        up_p_mask[spin_up_I] = 1
-        up_p_state = DefiniteTensorComponent(up_p_mask,'spin up particle')
+        
+        
+        if isinstance(spin_up_I,int) and isinstance(spin_down_I,int):
+            mask_template = lambda x: np.zeros(self.envelope_model.solution_shape()[:-1])
+            up_p_mask = mask_template(None)
+            up_p_mask[spin_up_I] = 1
+            up_p_state = DefiniteTensorComponent(up_p_mask,'spin up particle')
 
-        down_p_mask = mask_template(None)
-        down_p_mask[spin_down_I] = 1
-        down_p_state = DefiniteTensorComponent(down_p_mask,'spin down particle')
+            down_p_mask = mask_template(None)
+            down_p_mask[spin_down_I] = 1
+            down_p_state = DefiniteTensorComponent(down_p_mask,'spin down particle')
+            
+            up_h_mask = mask_template(None)
+            ph_shift = int(up_h_mask.shape[0]/2)
+            up_h_mask[ph_shift+spin_up_I] = 1
+            up_h_state = DefiniteTensorComponent(up_h_mask,'spin up hole')
+            
+            
+            down_h_mask = mask_template(None)
+            down_h_mask[ph_shift+spin_down_I] = 1
+            down_h_state = DefiniteTensorComponent(down_h_mask,'spin down hole')
         
-        up_h_mask = mask_template(None)
-        ph_shift = int(up_h_mask.shape[0]/2)
-        up_h_mask[ph_shift+spin_up_I] = 1
-        up_h_state = DefiniteTensorComponent(up_h_mask,'spin up hole')
         
         
-        down_h_mask = mask_template(None)
-        down_h_mask[ph_shift+spin_down_I] = 1
-        down_h_state = DefiniteTensorComponent(down_h_mask,'spin down hole')
+        else:
+            mask_template = lambda x: np.zeros(self.envelope_model.solution_shape()[:-1],dtype='complex')
+            N = spin_up_I.shape[0]
+
+            up_p_mask = mask_template(None)
+            up_p_mask[:N] = spin_up_I
+            up_p_state = SpinorProjection(up_p_mask,'spin up particle',axis=0)
+            
+            
+            down_p_mask = mask_template(None)
+            up_p_mask[:N] = spin_down_I
+            down_p_state = SpinorProjection(down_p_mask,'spin down particle',axis=0)
+            
+            up_h_mask = mask_template(None)
+            ph_shift = int(up_h_mask.shape[0]/2)
+            up_h_mask[ph_shift:] = spin_up_I.conj()
+            
+            up_h_state = SpinorProjection(up_h_mask,'spin up hole',axis=0)
+            
+            
+            down_h_mask = mask_template(None)
+            up_h_mask[ph_shift:] = spin_down_I.conj()
+            down_h_state = SpinorProjection(down_h_mask,'spin down hole',axis=0)
+            
         
         
         mu_L = sympy.Dummy(r'\mu_{L}') # make them dummies to avoid overwriting them 
@@ -223,25 +344,78 @@ class DotSCDot(System):
             return self.envelope_model
         
         
+        prev_energies = [None,None]
+        def energy_continuity(energies):
+            delta1 = np.abs(energies[0]-prev_energies)     
+            delta2 = np.abs(energies[1]-prev_energies)
+            # find the energies that minimize the difference and 
+            
+            min_Is = (np.argmin(delta1),np.argmin(delta2))
+            if min_Is[0] == min_Is[1]:
+                l = delta1 if delta1[min_Is[0]]>delta2[min_Is[0]] else delta2
+                sort_l = np.argsort(l)
+                min_Is = (min_Is[0],sort_l[1])
+                
+            return np.array(min_Is)
+        
         def evaluation_func(model,res):
             #determine all couplings here:
             X_arr = self.envelope_model.positional_rep(res[1][0])[1]
             vals = []
             subspaces = ((left_up,right_up),(left_up,right_down),(left_up,right_h_down),(left_up,right_h_up)) # T, Tso,D,Dso
             for subsp in subspaces:
-
+                
                 subspace_I = self.select_subspace(subsp,res[1],2,x_points=X_arr)
                 vals.append(np.abs(res[0][subspace_I[0]]-res[0][subspace_I[1]]))
 
             other = res if verbose_result else None
                 
             return (vals,res)
-            
-        iterative_model_solver = IntermediateResSave(model_update,solver,evaluation_func,return_func=lambda x:x[1])
+        
+        iterative_model_solver = IntermediateResSave(model_update,solver,evaluation_func,return_func=lambda x:x)
         #endregion
         
         
         parameter_range = tuple(p+E0 for p in parameter_range)
+
+        if method == 'signed':
+            
+            from nqcpfem.parameter_search import IterativeModelSolver
+            
+            simple_it_solver=IterativeModelSolver(model_update,solver)
+            subspaces = ((left_up,right_up),(left_up,right_down),(left_up,right_h_down),(left_up,right_h_up)) # T, Tso,D,Dso
+            # apply preprocessing: divide x_range into 100 pieces and make this the unit scale of energy
+            
+            E_scale = (parameter_range[1]-parameter_range[0])/100
+
+            xL = parameter_range[0]/E_scale
+            xR = parameter_range[1]/E_scale
+
+            def overlap_func(evecs,target_states):
+                X_arr = self.envelope_model.positional_rep(evecs[0])[1]
+                return self.subspace_weights(target_states,evecs,x_points=X_arr).T
+            
+            def eval_func(x):
+                #convert energy back
+                x_real = x*E_scale
+                evals,evecs = simple_it_solver(x_real)
+                #cast the energies to to the specified energy_scale
+                evals = evals/E_scale
+                
+                #rotate the basis of the spin DOF to make it parallel and anti-parallel wrt B
+                
+                return evals,evecs
+            
+            S = SignedSearch(xL,xR,eval_func,1e-2,subspaces,overlap_func) 
+            res = S.minimize()
+            
+            #cast the result back to real units
+            result = [r['val']*E_scale/2 for r in res] 
+            return result
+            
+            
+            
+        
         if method == 'new':
             
             ranges = crossing_preprocessing(E0*1.01,left_up,right_up,right_down,right_h_up,right_h_down,iterative_model_solver,self)
@@ -339,6 +513,9 @@ class DotSCDot(System):
         elif method =='brent':
             
             
+            
+            
+            
             # evaluate the model in the left-most, right-most and center points .
             iterative_model_solver.return_func = lambda x:x[0][0] # T number
             init_bracket = []
@@ -371,7 +548,7 @@ class DotSCDot(System):
 
             
 
-             #find D
+            #find D
             LOGGER.info('finding D')
             iterative_model_solver.return_func = lambda x:x[0][2] #Tso number
             x_vals = [s[0] for s in iterative_model_solver.saved_results]
@@ -382,7 +559,7 @@ class DotSCDot(System):
             D_sol = D_crossing_finder.minimize(*init_bracket)
             LOGGER.debug(f'D found. N_iter = {len(D_sol.derivs)}')
 
-           #find Dso
+            #find Dso
             LOGGER.info('finding D_so')
             iterative_model_solver.return_func = lambda x:x[0][3] #Tso number
             x_vals = [s[0] for s in iterative_model_solver.saved_results]
@@ -395,7 +572,108 @@ class DotSCDot(System):
             LOGGER.debug(f'Dso fund. N_iter = {len(Dso_sol.derivs)}')
             LOGGER.info(f'total number of function calls: {len(iterative_model_solver.saved_results)}')
             
-            # set the sytem back to what it was before (to avoid mysterious behaviour when working with the system again)
+            # set the system back to what it was before (to avoid mysterious behaviour when working with the system again)
+            self.envelope_model.band_model.independent_vars['preprocessed_array'] = self.envelope_model.band_model.independent_vars['preprocessed_array'].subs(mu_detuning,0)
+            del self.envelope_model.band_model.function_dict[mu_detuning] 
+            
+            
+            return T_sol,Tso_sol,D_sol,Dso_sol
+        
+        elif method =='GD':
+            prev_energies = [None,None]
+            def energy_continuity(energies,prev_energies):
+                delta1 = np.abs(energies[0]-prev_energies)     
+                delta2 = np.abs(energies[1]-prev_energies)
+                # find the energies that minimize the difference and 
+                
+                min_Is = (np.argmin(delta1),np.argmin(delta2))
+                if min_Is[0] == min_Is[1]:
+                    l = delta1 if delta1[min_Is[0]]>delta2[min_Is[0]] else delta2
+                    sort_l = np.argsort(l)
+                    min_Is = (min_Is[0],sort_l[1])
+                    
+                return np.array(min_Is)
+            spin_I= 0
+            class evaluation_func():
+                def __init__(e_self,prev_energies=[None,None]):
+                    e_self.prev_energies = prev_energies
+            
+                def __call__(e_self,model,res):
+                    #determine all couplings here:
+                    vals = []
+                    subspaces = ((left_up,right_up),(left_up,right_down),(left_up,right_h_down),(left_up,right_h_up)) # T, Tso,D,Dso
+                    subsp = subspaces[spin_I] 
+                    if energy_method and e_self.prev_energies[0] is not None:
+                        subspace_I = energy_continuity(res[0],e_self.prev_energies)
+                    else:
+                        X_arr = self.envelope_model.positional_rep(res[1][0])[1]
+                        subspace_I = self.select_subspace(subsp,res[1],2,x_points=X_arr)
+                
+                    e_self.prev_energies = (res[0][subspace_I[0]],res[0][subspace_I[1]])
+                    return np.abs(res[0][subspace_I[0]]-res[0][subspace_I[1]])
+            
+            
+            
+            # evaluate the model in the left-most, right-most and center points .
+            evalfunc = evaluation_func()
+            iterative_model_solver.evaluation_func =  evalfunc   
+            
+            
+            
+            def make_init_bracket():
+                init_bracket = []
+                for p in (parameter_range[0],2*parameter_range[0]/3+parameter_range[1]/3, parameter_range[1]):
+                    init_bracket.append(p)
+                    init_bracket.append(iterative_model_solver(p))
+                return init_bracket
+            
+            init_bracket = make_init_bracket()
+            
+            #find T
+            LOGGER.info('finding T')
+            
+            t_crossing_finder = GoldenCrossingFinder(iterative_model_solver,parameter_range,**crossing_finder_kwargs)
+            
+            T_sol = t_crossing_finder.minimize(*init_bracket)
+            LOGGER.debug(f'T_found. N_iter = {len(T_sol.derivs)}')
+
+            
+            
+            #find T_so
+            LOGGER.info('finding T_so')
+            spin_I=1
+            evalfunc.prev_energies = [None,None]
+            
+            tso_crossing_finder = GoldenCrossingFinder(iterative_model_solver,parameter_range,**crossing_finder_kwargs)
+            init_bracket = make_init_bracket()
+            Tso_sol=tso_crossing_finder.minimize(*init_bracket)
+            LOGGER.debug(f'Tso_found. N_iter = {len(Tso_sol.derivs)}')
+
+            
+
+            #find D
+            LOGGER.info('finding D')
+            spin_I=2
+            evalfunc.prev_energies = [None,None]
+            
+            D_crossing_finder = GoldenCrossingFinder(iterative_model_solver,parameter_range,**crossing_finder_kwargs)
+            init_bracket =  make_init_bracket()
+            D_sol = D_crossing_finder.minimize(*init_bracket)
+            LOGGER.debug(f'D found. N_iter = {len(D_sol.derivs)}')
+
+            #find Dso
+            LOGGER.info('finding D_so')
+            spin_I=3
+            evalfunc.prev_energies = [None,None]
+            
+            
+            Dso_crossing_finder = GoldenCrossingFinder(iterative_model_solver,parameter_range,**crossing_finder_kwargs)
+            init_bracket =  make_init_bracket()
+            Dso_sol=Dso_crossing_finder.minimize(*init_bracket)
+            LOGGER.debug(f'Dso fund. N_iter = {len(Dso_sol.derivs)}')
+            LOGGER.info(f'total number of function calls: {len(iterative_model_solver.saved_results)}')
+            
+            # set the system back to what it was before (to avoid mysterious behaviour when working with the system again)
             self.envelope_model.band_model.independent_vars['preprocessed_array'] = self.envelope_model.band_model.independent_vars['preprocessed_array'].subs(mu_detuning,0)
             del self.envelope_model.band_model.function_dict[mu_detuning] 
             
@@ -905,8 +1183,287 @@ class GoldenCrossingFinder():
         return res/self.y_scale
     
     
+
+
+class BracketMinimizer():
+    def __init__(self,xa,xb,xc,f,target_states,xtol=1e-3,max_iter=100):
+        #xa<xb<xc and f(xb)<f(xa), f(xb)<f(xc)
+        
+        if xb>xc or xa>xb:
+            raise ValueError(f'invalid brakcet {a,b,c}')
+        self.a = RunInfo(xa,None,None,None)
+        self.b = RunInfo(xb,None,None,None)
+        self.c = RunInfo(xc,None,None,None)
+        self.xtol=xtol
+        self.target_states = target_states
+        self.f = f
+        self.max_iter=max_iter
+        self.hist = []
+
     
     
+    def pair_ordering(self,states):
+        # states indexed by first index!
+        projection_fidelity = []
+        indices = []
+        #generate the list
+        # project all the states down to the subspace
+        proj = np.abs(np.einsum('aj,bj->ab',self.target_states.conj(),states))**2# should be 2xN
+        # loop over collumn for all pairs and compute their projection fidelity
+        for i in range(states.shape[0]):
+            for j in range(i+1,states.shape[0]):
+                projection_fidelity.append(np.sum(proj[:,i])+np.sum(proj[:,j]))
+                indices.append((i,j))
+                
+        return [indices[i] for i in np.argsort(projection_fidelity)[::-1]] # return pairs sorted accoridng to projection fidelity
+    
+    
+    def find_selection(self,x,res,left_point,right_point):
+        left_delta = x-left_point.x
+        left_diff = np.abs(left_point.Es[left_point.sel[0]]- left_point.Es[left_point.sel[1]])
+
+        right_delta = right_point.x-x
+        right_diff = np.abs(right_point.Es[right_point.sel[0]]- right_point.Es[right_point.sel[1]])
+        
+        
+        
+        # pick the first pair of states that give valid differences
+        E = res[0]
+        psi = res[1].T
+        selection= None
+        state_ordering = self.pair_ordering(psi)
+        for (i,j) in state_ordering:
+            diff = np.abs(E[i]-E[j])
+            if (diff-left_diff > left_delta) or  (diff-right_diff>right_delta):
+                continue
+            
+            selection = (i,j)
+            break # 
+        if selection is None:
+            #raise ValueError('did not find valid pair')
+            print('did not find valid pair')
+            selection = state_ordering[0]
+        result = RunInfo(x,E,psi,selection) 
+        return result
+    def update_iter(self,x,res):
+
+        
+        #determine left and right bounds from xa,xb,xc
+        b_dist = x-self.b.x
+        if b_dist>0: # this point to the right of b
+            left_point = self.b
+            right_point = self.c
+        else:
+            left_point = self.a
+            right_point = self.b
+        
+        
+        result = self.find_selection(x,res,left_point,right_point)
+        
+        right_diff = np.abs(right_point.Es[right_point.sel[0]]- right_point.Es[right_point.sel[1]])
+        left_diff = np.abs(left_point.Es[left_point.sel[0]]- left_point.Es[left_point.sel[1]])
+        res_diff = np.abs(result.Es[result.sel[0]]- result.Es[result.sel[1]])
+        if b_dist>0: # ordering is abrc and left is b and right is c
+            if res_diff > left_diff:
+                # new bracket is abr
+                self.c = result
+            else:
+                #new bracket is brc
+                self.a = self.b
+                self.b = result
+        else: # ordering is arbc and left is a and right is c
+            if res_diff > right_diff:
+                # new bracket is rbc
+                self.a = result
+            else:
+                #new bracket is arb
+                self.c = self.b
+                self.b = result
+        
+        
+        EE = np.sort([result.Es[result.sel[0]],result.Es[result.sel[1]]])
+        self.hist.append((x,EE))
+        
+        return result
+    
+    
+    def __call__(self,x):
+        res = self.f(x)
+        r=self.update_iter(x,res)
+        diff = np.abs(r.Es[r.sel[0]]-r.Es[r.sel[1]]) 
+        print(x,diff)
+        return diff
+    def run(self):
+        
+        
+        if self.a.Es is None:
+            res = self.f(self.a.x)
+            # this must just match the target states as good as possible
+            state_ordering = self.pair_ordering(res[1].T)
+            self.a = RunInfo(self.a.x,res[0],res[1].T,state_ordering[0])
+        if self.c.Es is None:
+            res = self.f(self.c.x)
+            # this must just match the target states as good as possible
+            state_ordering = self.pair_ordering(res[1].T)
+            self.c = RunInfo(self.c.x,res[0],res[1].T,state_ordering[0])
+        
+        if self.b.Es is None:
+            res = self.f(self.b.x)
+            self.b = self.find_selection(self.b.x,res,self.a,self.c)
+        
+        for r in (self.a,self.c,self.b):
+            EE = np.sort([r.Es[r.sel[0]],r.Es[r.sel[1]]])
+            self.hist.append((r.x,EE))
+        
+        from scipy.optimize._optimize import Brent
+
+        
+        brent = Brent(self,maxiter=self.max_iter,full_output=True,disp=3,tol=self.xtol)
+        
+        
+        f_vals = [np.abs(r.Es[r.sel[0]]-r.Es[r.sel[1]]) for r in (self.a,self.b,self.c)]
+        
+        def override_bracket_constructor(*args):
+            return (self.a.x,self.b.x,self.c.x,*f_vals,0) # 0 is func_calls
+        
+        brent.get_bracket_info = override_bracket_constructor
+        
+        brent.optimize()
+        res = (brent.xmin,brent.fval) 
+        return res
+    
+    
+
+class SignedSearch():
+    def __init__(self,xL,xR,evalfunc,xtol,state_sets,overlap_func,method='brentq'):
+        self.xL =xL
+        self.xR =xR
+        self.f = evalfunc
+        self.overlap_func=overlap_func # func that given output of evalfunc (N vectors) and state_sets (L vectors) gives and LxN array specifying the overlap
+        self.xtol = xtol
+        self.target_states=state_sets
+        self.__current_i__=None
+        self.runs = [[] for _ in range(len(self.target_states))]
+        self.calls=0
+        self.method = method
+        self.initial_brackets = [None]*len(self.target_states)
+
+    def energy_diff(self,overlaps,evals):
+        #pick the two states with highest overlapwith highest overlap
+        fidelity=np.sum(overlaps,axis=0)
+        sort_I=np.argsort(fidelity)
+        selection = sort_I[-2:]
+        #purity is based the fidelity of the discarded states
+        sorting = np.argsort([overlaps[0,s] for s in selection]) # sorted from low to high
+        total_fidelity = np.sum(fidelity)
+        return evals[selection[sorting[1]]]-evals[selection[sorting[0]]],1-np.sum(fidelity[sort_I[:-2]])/total_fidelity
+    
+    def make_overlap_mat(self,selected_state,other_state,evecs):
+        overlaps =np.abs(np.einsum('ki,ji->kj',np.stack([selected_state,other_state]).conj(),evecs))**2
+        return overlaps    
+    def signed_diff(self,x):
+        evals,evecs=self.f(x)
+        #determine the two relevant states
+        results = []
+        for i,target_states in enumerate(self.target_states):
+            overlaps = self.overlap_func(evecs,target_states)
+            diff,fidelity=self.energy_diff(overlaps,evals)
+            LOGGER.debug((i,diff,fidelity,self.__current_i__,x))
+            self.runs[i].append((x,diff,fidelity))
+            results.append(diff)
+        return results[self.__current_i__]
+    
+    
+    @classmethod
+    def inspire(cls,old,res_x,percentile=0.5):
+        new = cls(old.xL,old.xR,old.f,old.xtol,old.target_states,old.overlap_func,old.method)
+
+        
+        spacing = percentile*(new.xR-new.xL)
+        brackets = []
+        for i,R in enumerate(old.runs):
+            # assume last element is the final guess.
+            center=res_x[i]
+            print(center)
+            #brackets.append((center-spacing,center+spacing))
+
+            N = len(R)
+            included = int(np.ceil(N*percentile))
+            X_pos = np.array([r[0] for r in R])
+            neighbors= np.argsort(np.abs(X_pos-center))[:included]
+            # find the two neighbors that are left and rightmost
+            neighbor_pos = X_pos[neighbors]
+            brackets.append((np.min(neighbor_pos),np.max(neighbor_pos)))
+        
+        print(brackets)
+        new.initial_brackets=brackets
+        
+        return new
+            
+        
+    
+    def find_bracket(self,i,min_fidelity=0.7):
+        X = np.array([r[0] for r in self.runs[i] if r[2]>min_fidelity])
+        V = np.array([r[1] for r in self.runs[i] if r[2]>min_fidelity])
+        if len(X)<2:
+            return (self.xL,self.xR) # fallback to default bracket
+        L_sign = np.sign(V[np.argmin(X)])
+        R_sign = np.sign(V[np.argmax(X)])
+        
+        # pick largest x_value with same sign as L_sign:
+        X_L= X[np.sign(V)==L_sign]
+        V_L= V[np.sign(V)==L_sign]
+        X_R= X[np.sign(V)==R_sign]
+        V_R= V[np.sign(V)==R_sign]
+        if not(len(X_L)) or not(len(X_L)):
+            return None
+        print(V_L[np.argmax(X_L)],np.max(X_L),V_R[np.argmin(X_R)],np.min(X_R),i)
+        
+        
+        return np.max(X_L),np.min(X_R)
+        
+    def minimize(self):
+        results = []
+        bracket =None
+        for i in range(len(self.target_states)):
+            self.__current_i__ = i
+            if self.initial_brackets[i] is None:
+                if bracket is None:
+                    bracket = (self.xL,self.xR)
+                else:
+                    bracket=self.find_bracket(i) 
+                    if bracket is None: bracket= (self.xL,self.xR) #default if we do not find a bracket
+                    #bracket = (self.xL,self.xR)
+            else:
+                bracket = self.initial_brackets[i] # allows specifying bracket for each run manually
+            setup_kwargs = {'method':self.method}
+            if self.method == 'halley':
+                x0 = 0.5*(bracket[1]+bracket[0] )
+                setup_kwargs['x0'] = x0
+                setup_kwargs['fprime'] = False
+                setup_kwargs['fprime2'] = False
+            elif self.method in ('secant','newton'):   
+                x0 = 0.5*(bracket[1]+bracket[0] )
+                setup_kwargs['x0'] = x0
+            from scipy.optimize import root_scalar
+            
+            try:
+                res = root_scalar(self.signed_diff,xtol=self.xtol,bracket=bracket,**setup_kwargs)
+            except Exception as err:
+                print('ERROR:',err)
+                print(((err,bracket,self.runs)))
+                raise err
+                #fallback to default bracket
+                res = root_scalar(self.signed_diff,xtol=self.xtol,bracket=(self.xL,self.xR),**setup_kwargs)
+            x = res.root
+            res['val'] = np.abs(self.signed_diff(x))
+            results.append(res)
+            print(bracket,res)
+        calls=sum(r.function_calls for r in results)
+        LOGGER.info(f'all couplings determined using {calls} function calls.')
+        self.calls=calls
+        return results 
+
     
 def crossing_preprocessing(E0,Vsweep,Pup,Pdown,Aup,Adown,solution_func,system):
     init_run= solution_func(E0)
@@ -936,4 +1493,21 @@ def crossing_preprocessing(E0,Vsweep,Pup,Pdown,Aup,Adown,solution_func,system):
     
             
             
-            
+
+def make_B_eigenstates(Bx,By,Bz):           
+    """
+    Construct the spin eigenstates of the Zeeman Hamiltonian with the specific B. Returns a 2x2 unitary for transforming into the spin eigenstates
+    """
+    norm_B = np.linalg.norm([Bx,By,Bz])
+
+    
+    alpha_0 = np.sqrt( (Bx**2+By**2)/(2*norm_B*(norm_B+Bz)))
+    alpha_1 = np.sqrt( (Bx**2+By**2)/(2*norm_B*(norm_B-Bz)))
+    up_0 = 1/(alpha_0*(Bx+1j*By)) * (Bz+norm_B)
+    up_1 = 1/alpha_0
+    
+    down_0 = 1/(alpha_1*(Bx+1j*By)) * (Bz-norm_B)
+    down_1 = 1/alpha_1
+    U=np.array([[up_0,down_0],[up_1,down_1]])
+    return U/np.linalg.norm(U,axis=0)[np.newaxis,:]
+        

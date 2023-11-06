@@ -240,7 +240,7 @@ class DBMPParameterSearch(DBParameterSearch,MPParameterSearch):
        except Exception as err:
            LOGGER.exception(f'critial error occured in filer-writer: {err}')
            return 
-    def run(self,n_workers, save_results=True, skip_errors=True):
+    def run(self,n_workers, save_results=True, skip_errors=True,resume=True):
         if not save_results:
             raise NotImplementedError
             #run MP run without saving
@@ -248,6 +248,12 @@ class DBMPParameterSearch(DBParameterSearch,MPParameterSearch):
         LOGGER.info(f'running database MP parametersearch with {len(self.parameter_sets)} points and {n_workers} workers')
         if n_workers < 2:
             raise ValueError('at least 2 workes are required for database ParameterSearch as one worker is reserved for writing')
+        
+        #read from the DB to see how far it was before
+        with self.__db__() as db:
+            start_i = max (int(i) if i!= '__parameter_sets__' else 0 for i in db.keys() )
+
+        LOGGER.debug(f'starting from {start_i}')
         manager = mp.Manager()
         q = manager.Queue()
         pool = mp.Pool(n_workers)
@@ -257,6 +263,8 @@ class DBMPParameterSearch(DBParameterSearch,MPParameterSearch):
         
         jobs = []
         for i,param_set in enumerate(self.parameter_sets):
+            if i<start_i:
+                continue
             job = pool.apply_async(self.run_func,((param_set,self,skip_errors,save_results,i),q))
             jobs.append(job)
             
@@ -266,7 +274,8 @@ class DBMPParameterSearch(DBParameterSearch,MPParameterSearch):
         q.put('kill')
         pool.close()
         pool.join()
-        
+    
+    
         
 class GridSearch(ParameterSearch):
     """
