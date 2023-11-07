@@ -1343,8 +1343,9 @@ class SignedSearch():
         self.xtol = xtol
         self.target_states=state_sets
         self.__current_i__=None
-        self.runs = [[] for _ in range(len(self.target_states))]
+        self.runs = [{} for _ in range(len(self.target_states))] # faster lookup using the x value
         self.calls=0
+        self.__reused_calls__ = 0
         self.method = method
         self.initial_brackets = [None]*len(self.target_states)
 
@@ -1362,6 +1363,10 @@ class SignedSearch():
         overlaps =np.abs(np.einsum('ki,ji->kj',np.stack([selected_state,other_state]).conj(),evecs))**2
         return overlaps    
     def signed_diff(self,x):
+        if x in self.runs[self.__current_i__]:
+            #reuse previous calls if they are available
+            self.__reused_calls__ +=1
+            return self.runs[self.__current_i__][x][1]
         evals,evecs=self.f(x)
         #determine the two relevant states
         results = []
@@ -1369,7 +1374,7 @@ class SignedSearch():
             overlaps = self.overlap_func(evecs,target_states)
             diff,fidelity=self.energy_diff(overlaps,evals)
             LOGGER.debug((i,diff,fidelity,self.__current_i__,x))
-            self.runs[i].append((x,diff,fidelity))
+            self.runs[i][x]=((x,diff,fidelity))
             results.append(diff)
         return results[self.__current_i__]
     
@@ -1459,7 +1464,7 @@ class SignedSearch():
             res['val'] = np.abs(self.signed_diff(x))
             results.append(res)
             print(bracket,res)
-        calls=sum(r.function_calls for r in results)
+        calls=sum(r.function_calls for r in results)-self.__reused_calls__
         LOGGER.info(f'all couplings determined using {calls} function calls.')
         self.calls=calls
         return results 
