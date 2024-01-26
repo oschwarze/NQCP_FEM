@@ -25,7 +25,7 @@ LOGGER.addHandler(logging.NullHandler())
 
 
 class FEniCsModel(envelope_function.EnvelopeFunctionModel):
-    def __init__(self, band_model, domain,boundary_condition=None,function_class=('CG',1)):
+    def __init__(self, band_model, domain,boundary_condition=None,function_class=('CG',1),fix_energy_scale=False):
 
         """
         EnvelopeFunctionModel which evaluates the k operator using finite element methods, built on FEniCSX. 	
@@ -34,6 +34,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         :param	Domain domain: The Domain which the model must be solved on
         :param	float|None boundary_condition: Constant value for the boundary condition. By default, the boundary condition is 0.
         :param	Tuple[str,int] function_class: Class of functions to use in the finite elements. Defaults to ('CG',1).
+        :param bool fix_energy_scale: Whether to fix the energy scale to the first time it is computed or not. This will speed up consecutive model constructions, but assumes that the energies between the two models are similar (which they of often are)
         """
         # check that domain has the required attributes:
         must_have = {}
@@ -64,7 +65,8 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         independent_vars = {'band_model':band_model,
                             'domain':domain,
                             'boundary_condition':boundary_condition,
-                            'function_class':function_class}
+                            'function_class':function_class,
+                            'fix_energy_scale':fix_energy_scale}
         
         super().__init__(**independent_vars)
     
@@ -210,8 +212,10 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         else:
             raise NotImplementedError
         return float(length_scale) # this number should never be complex
-    @auto_update
-    def energy_scale(self):
+    
+    
+    
+    def __make_energy_scale__(self):
         """
         determines the energy scale used in the assembled array. This is because numerics are unstable with
         very small eigenvalues.
@@ -223,9 +227,23 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         #return np.real(np.max(max_vals))#.astype(np.float64) # this number should never be complex
         max_vals = []
         
+        
+        # determien the energy scale based off of the 
+        
+        #TODO: construct the numerical array by constructing the Valuemap using band_model. adding kx,ky,kz and x,y,z to it (eval to -1j/L and 0 respectivel)
+        # and add the functions to it as well. 
+        # given dummy map and lambda_template from band_model, construct subsituted array directly, 
+        
         # compute it from the numerical array instead
-        arr = sympy.Array(self.band_model.numerical_array()).subs({k:-1j/self.length_scale() for k in self.band_model.momentum_symbols}).subs({x:0 for x in self.band_model.position_symbols})
-        e= float(np.max(np.real(np.array(arr).astype('complex'))))
+        LOGGER.debug('constructing array')
+        arr = sympy.Array(self.band_model.numerical_array())
+        LOGGER.debug('substituting')
+        arr=arr.subs({k:-1j/self.length_scale() for k in self.band_model.momentum_symbols}).subs({x:0 for x in self.band_model.position_symbols})
+        LOGGER.debug('casting back')
+        arr = np.array(arr).astype('complex')
+        
+        LOGGER.debug('maximizing')
+        e= float(np.max(np.real(arr)))
         return e #this is fast enough
         
         for R,T in self.band_model.numerical_tensor_repr().items():
@@ -243,6 +261,19 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         else:
             return 1
 
+    @auto_update
+    def energy_scale(self):
+        
+        fixed_E = self.independent_vars['fix_energy_scale']
+        
+        if fixed_E:
+            try:
+                return self._saved_energy_scale.value # return the precomputed energy scale type:igonre
+            except Exception:
+                pass
+        
+        LOGGER.debug('computing energy_scale')
+        return self.__make_energy_scale__()
     @auto_update
     def converted_functions(self):
 
@@ -459,15 +490,16 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         constants_dict = self.dolfinx_constants()
         
         # update the value of the constants based on the values stored in the band_model parameter_dict and constants dict:
-        numbers_dict = self.independent_vars['band_model'].independent_vars['parameter_dict'].copy()
+        LOGGER.debug('retrieving parameter and constant dicts')
+        numbers_dict = self.independent_vars['band_model'].independent_vars['parameter_dict']
         const_dict = self.independent_vars['band_model'].independent_vars['constants']
         
+        LOGGER.debug('updating values')
         for k,const in constants_dict.items():
-            if k in self.independent_vars['band_model'].position_symbols:
-                continue
-            elif k == '__energy_scale__':
+            if k == '__energy_scale__':
+                LOGGER.debug('retireving energy scale')
                 const.value = np.complex128(self.energy_scale())
-            else:
+            elif k not in self.independent_vars['band_model'].position_symbols:
                 try:
                     const.value = np.complex128(numbers_dict[k])
                     
@@ -477,6 +509,8 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                     except KeyError as e:
                         raise KeyError(f'key {k} in dolfinx_constants() was not found in neither the parameter_dict nor the constants dict of the band_model.') from e
         #we can now assemble the form  
+        
+        LOGGER.debug('gathering constants complete')
         return constants_dict
     @auto_update
     def bilinear_form(self,overwrite=False):
@@ -589,10 +623,11 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         """ This metho actull cnstructs the assembled array, but since petsc matrices can be altered, we have to protect te output of this in order t guarantee tha it can be reused without having been altered"""
         
         
-        LOGGER.debug(f'assembling array') #with parameters: {self.independent_vars["band_model"].independent_vars["parameter_dict"]}')
         A = self.__make_unassembled_array__() #this reuses existing elements
-        A.zeroEntries() # clear the entries of any previous run
+        #A.zeroEntries() # clear the entries of any previous run
         constants = self.__gather_constants__() # value is not used, but this function also updates the DolfinxConstants 
+        
+        LOGGER.debug(f'assembling array') #with parameters: {self.independent_vars["band_model"].independent_vars["parameter_dict"]}')
         A = dolfinx.fem.petsc.assemble_matrix(A,self.bilinear_form(),bcs=self.dolfin_bc())#diagonal=1234e10)
         A.assemble()
 

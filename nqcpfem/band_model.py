@@ -330,7 +330,7 @@ class BandModel(UpdatableObject):
     
     
     @auto_update
-    def numerical_array(self,replace_symbolic_functions=True):
+    def numerical_lambda(self,replace_symbolic_functions=True):
         """
 
         creates a numpy array where the only free symbols left are x,y,z and k_x,k_y,k_z. THe ks are replaced with new symbols with the same name but commutative.
@@ -338,6 +338,9 @@ class BandModel(UpdatableObject):
         Args:
             float_format (_type_, optional): The format for the floats *that are not in the parameter_dict*. Defaults to PETSc.ScalarType.
         """
+        
+        #TODO: extract construction of the var_dict and make it update only the relevant parts instead of remaking everything whenever a value is changed (just update the value in the dict as well)
+        #TODO: extract the function substitution part o the construction and pass it a specific dictionary so that it can be used by fenics energy_scale to subs x,y,z with 0 fast.
         
         var_dict = self.independent_vars['parameter_dict'].copy() # make copy for adding constants and x,y,z and k_x,k_y,k_z. These will just be evaluated as their symbols
         # specify B field from A field if it is present:
@@ -383,7 +386,6 @@ class BandModel(UpdatableObject):
         if unspecified:
             raise ValueError(f'the following values have not been specified so the model cannot be cast as a numerical array:\n {unspecified}')
         
-        LOGGER.debug(f'building numerical array')
         
         # we have to dummify ourselves, because dummies created in lambdify are commutative which we don't want
         #dummy_map = dummify_non_commutative(self.post_processed_array())
@@ -394,13 +396,19 @@ class BandModel(UpdatableObject):
         dummy_map,lambdified_arr = self.lambdify_non_commutative()
         
         value_map = {v:var_dict[k] for k,v in dummy_map.items()}
-        numpy_version = np.array(lambdified_arr(*value_map.values())) # set Dummify to True to make sure that symbol names do not break the code
-        
-        #numpy_version = np.array(dummified.subs(value_map)) # workaround
-        return numpy_version
+        return value_map,lambdified_arr
 
     @auto_update
+    def numerical_array(self,replace_symbolic_functions=True):
+        LOGGER.debug(f'building numerical array')
+        value_map,lambdified_arr = self.numerical_lambda(replace_symbolic_functions=True)
+
+        numpy_version = np.array(lambdified_arr(*value_map.values())) # set Dummify to True to make sure that symbol names do not break the code
+        return numpy_version
+    
+    @auto_update
     def lambdify_non_commutative(self):
+        LOGGER.debug('constructing lambda map')
         dummy_map = dummify_non_commutative(self.post_processed_array())
         dummified = self.post_processed_array().subs(dummy_map)
         lambdified = sympy.lambdify(dummy_map.values(),dummified,dummify=False)

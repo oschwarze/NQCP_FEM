@@ -192,8 +192,16 @@ class EnvelopeFunctionModel(UpdatableObject,ABC):
 
 def sort_eigenvalues(eigenvalues,return_index = False):
     E = eigenvalues 
-    E_p = np.sort(E[E>0])
-    E_n = np.sort(E[E<0])[::-1]
+
+    if return_index:
+        E_p_I = np.where(E>0)[0]
+        E_p = E_p_I[np.argsort(E[E>0])]
+    
+        E_n_I = np.where(E<0)[0]
+        E_n = E_n_I[np.argsort(E[E<0])[::-1]]
+    else:
+        E_p = np.sort(E[E>0])
+        E_n = np.sort(E[E<0])[::-1]
     
     l = min(e.shape[0] for e in (E_p,E_n))
     # zip them together

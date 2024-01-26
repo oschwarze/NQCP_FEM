@@ -71,7 +71,7 @@ def majorana_overlap(state,model:FEniCsModel):
     i,j,k,l,m,n = ufl.indices(6)
     phi_p = sq*f[i,k]+P[i,j]*ufl.conj(f[j,k])
     phi_m = sq*f[l,n]-P[l,m]*ufl.conj(f[m,n])
-    i,j,k,l = ufl.indices(4)
+    
     prob_p = phi_p*ufl.conj(phi_p)
     prob_m = phi_m*ufl.conj(phi_m)
     
@@ -84,4 +84,60 @@ def majorana_overlap(state,model:FEniCsModel):
     
     dolfinx_form = dolfinx.fem.form(ufl_form)
     return dolfinx.fem.assemble_scalar(dolfinx_form)
+
+
+
+def majorana_overlap_bound(state_0,state_1,model:FEniCsModel):
+    V = model.function_space()
+    f = dolfinx.fem.Function(V)
+    g = dolfinx.fem.Function(V)
+
+    i,j = ufl.indices(2)
+    ip = f[i,j]*ufl.conj(g[i,j])
+    
+    ufl_form= ufl.sqrt(ip*ufl.conj(ip))*ufl.dx # integrate |<f|g>| over all of space. different from usual inner produt because we have absolute values!
+    f.x.array[:] = model.flatten_eigentensors(state_0)
+    g.x.array[:] = model.flatten_eigentensors(state_1)
+    
+    dolfinx_form = dolfinx.fem.form(ufl_form)
+    return dolfinx.fem.assemble_scalar(dolfinx_form)
+
+
+
+
+def super_majorana_overlap(state_0,state_1,model:FEniCsModel):
+    
+    numerator = majorana_overlap_bound(state_0,state_1,model)
+    
+    V = model.function_space()
+    f = dolfinx.fem.Function(V)
+    g = dolfinx.fem.Function(V)
+
+    Theta = dolfinx.fem.Constant(model.mesh(),np.complex128(0))
+    
+    
+    i,j = ufl.indices(2)
+    ip = f[i,j]*ufl.conj(g[i,j])*ufl.exp(Theta)
+    
+    ufl_form=abs(ufl.real(ip))*ufl.dx
+    
+    
+    #ufl_form= ufl.sqrt(ufl.conj(ip))*ufl.dx # integrate |<f|g>| over all of space. different from usual inner produt because we have absolute values!
+    dolfinx_form = dolfinx.fem.form(ufl_form)
+    f.x.array[:] = model.flatten_eigentensors(state_0)
+    g.x.array[:] = model.flatten_eigentensors(state_1)
+    
+    def overlap(theta):
+        print(theta)
+        Theta.value = 1j*np.complex128(theta) # set the value to theta    
+    
+        res = dolfinx.fem.assemble_scalar(dolfinx_form)
+        return -np.real(res)
+    from scipy.optimize import minimize_scalar
+    
+    res = minimize_scalar(overlap,bounds=(-0.1*np.pi,2.1*np.pi))
+    LOGGER.debug(res)
+    return -res.fun,res.x # this is the maximum, and the phase which obtains it
+
+
     
