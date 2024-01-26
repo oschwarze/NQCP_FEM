@@ -8,6 +8,7 @@ from typing import List,Tuple
 import ufl
 from mpi4py import MPI
 import dolfinx
+from dolfinx.fem import petsc as dolfinx_petsc
 from petsc4py import PETSc
 
 if PETSc.ScalarType != np.complex128:
@@ -150,6 +151,10 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         """
         if isinstance(function_shape,int):
             function_shape = (function_shape,)
+
+
+        return dolfinx.fem.functionspace(mesh,function_class+(function_shape,))
+        # old code for dolfinx<0.7
         if len(function_shape) == 1:
             if function_shape[0] > 1:
                 # vector case (spinors)
@@ -243,7 +248,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         arr = np.array(arr).astype('complex')
         
         LOGGER.debug('maximizing')
-        e= float(np.max(np.real(arr)))
+        e= PETSc.ScalarType(np.max(np.abs(arr)))
         return e #this is fast enough
         
         for R,T in self.band_model.numerical_tensor_repr().items():
@@ -349,7 +354,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                     new_param_dict[sym] = f 
         
         
-        new_param_dict['__energy_scale__'] = dolfinx.fem.Constant(self.mesh(),np.complex128(1)) # add the energy scale as a constant as well since it depends on the parameter_dict and we want the ufl_form to be independent of the parameter_dict
+        new_param_dict['__energy_scale__'] = dolfinx.fem.Constant(self.mesh(),self.energy_scale()) # add the energy scale as a constant as well since it depends on the parameter_dict and we want the ufl_form to be independent of the parameter_dict
         if sympy.symbols(r'\hbar') in new_param_dict.keys():
             new_param_dict[sympy.symbols(r'hbar')] = new_param_dict[sympy.symbols(r'\hbar')]
             
@@ -585,9 +590,19 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         boundary_state = np.complex128(boundary_value) if self.independent_vars['band_model'].tensor_shape == (1,1) else np.full(self.independent_vars['band_model'].tensor_shape[::2],boundary_value, dtype='complex')
         infinity_boundary = dolfinx.fem.dirichletbc(boundary_state, boundary_dofs, self.function_space())
         u_boundary = dolfinx.fem.Function(self.function_space())
-        dolfinx.fem.petsc.set_bc(u_boundary.vector, [infinity_boundary])
-        u_boundary.x.scatter_forward()
-        return u_boundary.vector # retun the petsc vector
+        
+        petsc_vec = dolfinx.la.create_petsc_vector(u_boundary.x.index_map,u_boundary.x.block_size)
+
+
+        dolfinx_petsc.set_bc(petsc_vec, [infinity_boundary])
+
+        petsc_vec.assemble()
+        # return a new petsc vector to avoid segmentation fault
+
+
+
+        #u_boundary.x.scatter_forward()
+        return petsc_vec # retun the petsc vector
         from scipy.sparse import diags
         return diags(u_boundary.vector.getArray(),offsets=0,format='csr')
     
@@ -600,7 +615,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         except Exception:
             pass    
 
-        A = dolfinx.fem.petsc.create_matrix(self.bilinear_form())#diagonal=1234e10)
+        A = dolfinx_petsc.create_matrix(self.bilinear_form())#diagonal=1234e10)
         return A
     
     def assemble_array(self,petsc_array=None):
@@ -628,7 +643,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         constants = self.__gather_constants__() # value is not used, but this function also updates the DolfinxConstants 
         
         LOGGER.debug(f'assembling array') #with parameters: {self.independent_vars["band_model"].independent_vars["parameter_dict"]}')
-        A = dolfinx.fem.petsc.assemble_matrix(A,self.bilinear_form(),bcs=self.dolfin_bc())#diagonal=1234e10)
+        A = dolfinx_petsc.assemble_matrix(A,self.bilinear_form(),bcs=self.dolfin_bc())#diagonal=1234e10)
         A.assemble()
 
         A.setDiagonal(self.infinite_boundary_vec().copy(),PETSc.InsertMode.ADD_VALUES)
@@ -706,7 +721,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
             L = u[I]*ufl.conj(v[I])*ufl.dx
 
         form = dolfinx.fem.form(L)
-        A = dolfinx.fem.petsc.assemble_matrix(form,dolfin_bc.value)
+        A = dolfinx_petsc.assemble_matrix(form,dolfin_bc.value)
         A.assemble()
 
         return ComputedAttribute(A,time.time(),old_S_array.constructor,(function_space,band_model,dolfin_bc),old_S_array.attr_name)
@@ -741,7 +756,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
             L = u[I]*ufl.conj(v[I])*ufl.dx
 
         form = dolfinx.fem.form(L)
-        A = dolfinx.fem.petsc.assemble_matrix(form,self.dolfin_bc())
+        A = dolfinx_petsc.assemble_matrix(form,self.dolfin_bc())
         return A
 
 
@@ -785,7 +800,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         form = self.__ufl_tensor_dict_to_bilinear_form__(ufl_tensors)
         assembled_array = dolfinx.fem.form(form)
         
-        A = dolfinx.fem.petsc.assemble_matrix(assembled_array,self.dolfin_bc())#diagonal=1234e10)
+        A = dolfinx_petsc.assemble_matrix(assembled_array,self.dolfin_bc())#diagonal=1234e10)
         A.assemble()
 
         from scipy.sparse import  csr_matrix

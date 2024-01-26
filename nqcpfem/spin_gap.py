@@ -364,7 +364,7 @@ def find_spin_gap(results,envelope_model,bounded_state_tolerance=None,positional
             hh_lh_expec = np.abs(vector[:, 0]) ** 2 + np.abs(vector[:, 1]) ** 2 + np.abs(vector[:, 2]) ** 2 + np.abs(
                 vector[:, 3]) ** 2
             p = pyvista.Plotter()
-            topology, cell_types, x = dolfinx.plot.create_vtk_mesh(self.F)
+            topology, cell_types, x = dolfinx.plot.vtk_mesh(self.F)
             grid = pyvista.UnstructuredGrid(topology, cell_types, x)
             # hh_grid = pyvista.UnstructuredGrid(topology, cell_types, x)
             # lh_grid = pyvista.UnstructuredGrid(topology, cell_types, x)

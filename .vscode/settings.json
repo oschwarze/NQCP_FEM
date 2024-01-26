@@ -1,0 +1,14 @@
+{
+    "python.testing.pytestArgs": [
+        "nqcpfem"
+    ],
+    "python.testing.unittestEnabled": true,
+    "python.testing.pytestEnabled": false,
+    "python.testing.unittestArgs": [
+        "-v",
+        "-s",
+        "./nqcpfem/tests",
+        "-p",
+        "test_*.py"
+    ]
+}

@@ -95,10 +95,10 @@ class TestBandModel(TestCase):
             scalar_r2[:,:,1,1] = 1 
             scalar_r2[:,:,2,2] = 1 
             scalar_r2[:,:,0,1] = 1 
-            scalar_r2[:,:,2,1] = 1*self.tensor_problem.independent_vars['parameter_dict'][c]+1
-            scalar_r2[:,:,1,2] = -1
+            scalar_r2[:,:,1,2] = 1*self.tensor_problem.independent_vars['parameter_dict'][c]  # checks also that the k operators are sorted correctly with x being all the way to the left, y in the middle and z to the right
             result = self.scalar_problem.numerical_tensor_repr()
             print(result)
+            print(scalar_r2[0,0])
             self.assertEqual(len(result.keys()),3,msg=f'result keys: {tuple(result.keys())}')
             self.assertTrue(all(i in result.keys() for i in [1,2]))
             testing.assert_array_equal(scalar_r1,result[1])
@@ -177,10 +177,14 @@ class TestBandModel(TestCase):
         
         A_subs.update({v[0]:v[1].expression for v in self.funcs[1:]})
         x = sympy.symbols('x')
-        #A_subs[self.funcs[0][0]] = self.funcs[0][1](*(x,0,0))
-        #A_subs.update({sympy.symbols(k,commutative=False):sympy.symbols(k) for k in __MOMENTUM_NAMES__})
-        testing.assert_array_equal(result,np.array(self.scalar_A.subs(A_subs)))
+
+
+        # this line tests that the numerical array reurns commutative versions of K. if this behaviour is changed later, one can jsut uncomment this line
+        #A_subs.update({sympy.symbols(k,commutative=True):sympy.symbols(k) for k in __MOMENTUM_NAMES__})
         
+        testing.assert_array_equal(result,np.array(self.scalar_A.subs(A_subs))) 
+        
+
         result = self.spinor_problem.numerical_array()
         testing.assert_array_equal(result,np.array(self.spinor_A.subs(A_subs)))
         
