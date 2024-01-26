@@ -490,14 +490,11 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         constants_dict = self.dolfinx_constants()
         
         # update the value of the constants based on the values stored in the band_model parameter_dict and constants dict:
-        LOGGER.debug('retrieving parameter and constant dicts')
         numbers_dict = self.independent_vars['band_model'].independent_vars['parameter_dict']
         const_dict = self.independent_vars['band_model'].independent_vars['constants']
         
-        LOGGER.debug('updating values')
         for k,const in constants_dict.items():
             if k == '__energy_scale__':
-                LOGGER.debug('retireving energy scale')
                 const.value = np.complex128(self.energy_scale())
             elif k not in self.independent_vars['band_model'].position_symbols:
                 try:
@@ -510,7 +507,6 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                         raise KeyError(f'key {k} in dolfinx_constants() was not found in neither the parameter_dict nor the constants dict of the band_model.') from e
         #we can now assemble the form  
         
-        LOGGER.debug('gathering constants complete')
         return constants_dict
     @auto_update
     def bilinear_form(self,overwrite=False):

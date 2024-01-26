@@ -1291,7 +1291,7 @@ class BracketMinimizer():
         res = self.f(x)
         r=self.update_iter(x,res)
         diff = np.abs(r.Es[r.sel[0]]-r.Es[r.sel[1]]) 
-        print(x,diff)
+        LOGGER.debug(x,diff)
         return diff
     def run(self):
         
@@ -1389,7 +1389,6 @@ class SignedSearch():
         for i,R in enumerate(old.runs):
             # assume last element is the final guess.
             center=res_x[i]
-            print(center)
             #brackets.append((center-spacing,center+spacing))
 
             N = len(R)
@@ -1400,7 +1399,6 @@ class SignedSearch():
             neighbor_pos = X_pos[neighbors]
             brackets.append((np.min(neighbor_pos),np.max(neighbor_pos)))
         
-        print(brackets)
         new.initial_brackets=brackets
         
         return new
@@ -1408,8 +1406,8 @@ class SignedSearch():
         
     
     def find_bracket(self,i,min_fidelity=0.7):
-        X = np.array([r[0] for r in self.runs[i] if r[2]>min_fidelity])
-        V = np.array([r[1] for r in self.runs[i] if r[2]>min_fidelity])
+        X = np.array([x for x,v in self.runs[i].items() if v[2]>min_fidelity])
+        V = np.array([v[1] for v in self.runs[i].values() if v[2]>min_fidelity])
         if len(X)<2:
             return (self.xL,self.xR) # fallback to default bracket
         L_sign = np.sign(V[np.argmin(X)])
@@ -1421,11 +1419,14 @@ class SignedSearch():
         X_R= X[np.sign(V)==R_sign]
         V_R= V[np.sign(V)==R_sign]
         if not(len(X_L)) or not(len(X_L)):
-            return None
-        print(V_L[np.argmax(X_L)],np.max(X_L),V_R[np.argmin(X_R)],np.min(X_R),i)
+            return (self.xL,self.xR) # fallback to default bracket
+        LOGGER.debug((V_L[np.argmax(X_L)],np.max(X_L),V_R[np.argmin(X_R)],np.min(X_R),i))
         
-        
-        return np.max(X_L),np.min(X_R)
+        new_bracket=(np.max(X_L),np.min(X_R))
+        if new_bracket[0]>new_bracket[1]:
+            LOGGER.debug('fallback to old bracket')
+            return (self.xL,self.xR) # fallback to default bracket
+        return 
         
     def minimize(self):
         results = []
@@ -1455,17 +1456,19 @@ class SignedSearch():
             try:
                 res = root_scalar(self.signed_diff,xtol=self.xtol,bracket=bracket,**setup_kwargs)
             except Exception as err:
-                print('ERROR:',err)
-                print(((err,bracket,self.runs)))
-                raise err
+                LOGGER.debug('ERROR:',err)
+                LOGGER.debug(((err,bracket,self.runs)))
+                if bracket == (self.xL,self.xR):
+                    raise Exception('big bracket failed.') from err
                 #fallback to default bracket
                 res = root_scalar(self.signed_diff,xtol=self.xtol,bracket=(self.xL,self.xR),**setup_kwargs)
+
             x = res.root
             res['val'] = np.abs(self.signed_diff(x))
             results.append(res)
-            print(bracket,res)
+            LOGGER.debug(bracket,res)
         calls=sum(r.function_calls for r in results)-self.__reused_calls__
-        LOGGER.info(f'all couplings determined using {calls} function calls.')
+        LOGGER.info(f'all couplings determined using {calls} function calls. ({self.__reused_calls__} reused)')
         self.calls=calls
         return results 
 

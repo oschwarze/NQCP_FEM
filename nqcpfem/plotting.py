@@ -1,10 +1,10 @@
 import numpy as np
-import pyvista
 import dolfinx
 
 
 
 def plot_eigenvector(eigenvector,function_space,color=None,scaling =True,length_scale=1,drop_abs=False,keep_sign=False,return_plot=False,**kwargs):
+        import pyvista
         """
         Plot the eigenvector of a band-model
         :param np.ndarray eigenvector: the eigenvector solution
@@ -77,6 +77,7 @@ def plot_function(func,function_space,rescale=True,length_scale=1,show_xy_plane=
     :param float length_scale: Evaluates the function at points multiplied by this scale
     :return:
     """
+    import pyvista
     p = pyvista.Plotter()
     from .fenics import FEniCsModel
     if isinstance(function_space,FEniCsModel):
@@ -103,6 +104,8 @@ def plot_function(func,function_space,rescale=True,length_scale=1,show_xy_plane=
 
 
 def plot_interpolated_scalar(scalar,function_space):
+
+    import pyvista
     p = pyvista.Plotter()
     from .fenics import FEniCsModel
     if isinstance(function_space,FEniCsModel):
