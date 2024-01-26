@@ -1,0 +1,15 @@
+figure.figsize : 3.375, 3.375
+font.size:    11.0
+font.family: serif
+font.serif: Palatino
+axes.titlesize: medium
+figure.titlesize: medium
+figure.dpi: 300
+text.usetex: True
+text.latex.preamble: \usepackage{amsmath}\usepackage{amssymb}
+
+
+savefig.dpi:800
+savefig.format: pdf
+savefig.transparent: True
+savefig.bbox: tight

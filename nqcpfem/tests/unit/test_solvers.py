@@ -11,14 +11,14 @@ class MockEFM():
         self.sparse=False
         self.array = self.U @ np.diag(self.eigenvalues) @ self.U.conj().T
 
-    def assemble_array(self, sparse=False):
+    def assemble_array(self, petsc_array=None):
         if not self.sparse:
             return self.array
         from scipy.sparse import csr_matrix
         return csr_matrix(self.array)
 
 
-    def make_S_array(self):
+    def make_S_array(self,petsc_array=None):
         return 1
     
     def eigensolutions_to_eigentensors(self,eigensols):

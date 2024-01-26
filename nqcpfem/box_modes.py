@@ -572,7 +572,9 @@ class BoxEFM(EnvelopeFunctionModel):
         else:
             return BoxEFMObservable(operator,self)
     
-    
+    def solution_shape(self):
+        return self.band_model.tensor_shape[::2] + self.n_modes
+
 def __k_mat__(order, L, n_modes):
     """
     compute matrix version of k operator for box modes

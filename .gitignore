@@ -57,5 +57,12 @@ docs/_build/
 *.bak
 *.pkl
 *.dat
-#slurm studd
+*.h5
+*.xdmf
+*.0
+*.idx
+*.pdf
+*.zip
+*.npy
+#slurm stuff
 slurm/*
