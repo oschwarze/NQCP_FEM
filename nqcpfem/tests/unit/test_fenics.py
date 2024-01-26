@@ -226,10 +226,10 @@ class TestFEniCsModel(unittest.TestCase):
         S = self.model.make_S_array()
         
         # assert that the array gives particle in a box eigenmodes:
-        O = O +self.model.infinite_boundary_vec()
+        import scipy.sparse as sparse
+        O = O +sparse.diags(self.model.infinite_boundary_vec().getArray())
         factor = (_hbar**2*np.pi**2/(2*self.mass*self.Lx**2))
         
-        import scipy.sparse as sparse
         eigvals,eigvecs = sparse.linalg.eigsh(O,k=10,M=S,sigma=-1000)
         nsq = eigvals/factor
         np.testing.assert_allclose(nsq,np.round(nsq))
