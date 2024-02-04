@@ -190,8 +190,6 @@ class DotSCDot(System):
             return self.envelope_model
         
         
-        if any(w not in basis_states for w in ('plu','pru','prd','hru','hrd')):
-            raise KeyError(f"the basis states dice must have the following keys: {('plu','pru','prd','hru','hrd')}")
         
         parameter_range = tuple(p+E0 for p in parameter_range)
         if method == 'signed':
@@ -199,20 +197,34 @@ class DotSCDot(System):
             from nqcpfem.parameter_search import IterativeModelSolver
             
             simple_it_solver=IterativeModelSolver(model_update,solver)
-            subspaces = (('plu','pru'),('plu','prd'),('plu','hrd'),('plu','hru')) # T, Tso,D,Dso
+
+            #cast energies to numerically reasonable values
             # apply preprocessing: divide x_range into 100 pieces and make this the unit scale of energy
-            
             E_scale = (parameter_range[1]-parameter_range[0])/100
             LOGGER.debug(f'E_scale: {E_scale}')
             xL = parameter_range[0]/E_scale
             xR = parameter_range[1]/E_scale
 
-            #normalize the states
-            for k,v in basis_states.items():
-                norm= np.linalg.norm(v)
-                if not np.isclose(norm,1):
-                    basis_states[k] = v/np.linalg.norm(v)
+            #normalize basis states and construct subspace projections
+            if isinstance(basis_states,list):
+                subspaces = [(0,i) for i in range(len(basis_states))]
 
+                for i,b in enumerate(basis_states):
+                    norm = np.linalg.norm(b)
+                    if not np.isclose(norm,1):
+                        basis_states[i]= b/norm
+                    
+            elif all(w in basis_states for w in ('plu','pru','prd','hru','hrd')):
+                subspaces = (('plu','pru'),('plu','prd'),('plu','hrd'),('plu','hru')) # T, Tso,D,Dso
+                #normalize the states
+                for k,v in basis_states.items():
+                    norm= np.linalg.norm(v)
+                    if not np.isclose(norm,1):
+                        basis_states[k] = v/norm
+
+            else:
+                    raise ValueError('basis_states must either be a dict with keys "plu","pru","prd","hru,"hrd" or a list')
+            
             #this contains the subspaces we wish to compute the overlaps wrt. They are already conjugated!
             subspace_stacks_conj = {N: np.stack([basis_states[N[0]],basis_states[N[1]]]).conj() for N in subspaces}
 
@@ -1336,6 +1348,11 @@ class BracketMinimizer():
 
 class SignedSearch():
     def __init__(self,xL,xR,evalfunc,xtol,state_sets,overlap_func,method='brentq'):
+        """
+        Find the Coupling coefficient between state sets efficiently. The underlying idea is to view the voided crossing between states as not a minum of the 
+        energy splitting of the states, but as a discrete transition in the signed energy difference (E1(x)-E2(x)). At xmin-delta E1 > E2 but at xmin+delta E1 <E2
+        This insight allows us to find the crossing by finding where the signed energy crossing changes sign. 
+        """
         self.xL =xL
         self.xR =xR
         self.f = evalfunc
