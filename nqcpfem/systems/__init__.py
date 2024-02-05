@@ -156,7 +156,7 @@ class System(ABC):
         
         weights = self.subspace_weights(subspace_classes,eigenstates,**proj_kwargs)
         
-        sort_I = np.argsort(np.linalg.norm(w,axis=1))
+        sort_I = np.argsort(np.linalg.norm(weights,axis=1))
         
         
         return sort_I[-subspace_dim:]
