@@ -141,6 +141,9 @@ class ConstantsDict(UserDict):
                 super().__setitem__(key=k,item=IndependentAttribute(self.get_stored_attribute(k)))
         self.value = self # allows this object to be treated as an IndependentAttribute as well
         self.__was_used__ = False
+
+        self.__was_iterated_over__ = False
+
     @property
     def _modified_time_(self):
         if len(self.keys()):
@@ -153,7 +156,10 @@ class ConstantsDict(UserDict):
     def _was_used_(self):
         
         was_used_dict = {k:v._was_used_ for k,v in self.meta_items()}
-        if any(was_used_dict.values()):
+        #n_true = sum(was_used_dict.values())
+        if any(v is not False for v in was_used_dict.values()):
+            #if n_true == len(self):
+            #   return True  # return total number of elements in array. If elements are added, we know that we need to update!
             return was_used_dict
         else:
             return False
@@ -167,7 +173,7 @@ class ConstantsDict(UserDict):
     
     @property
     def _dependency_check_active_(self):
-        return self._dependency_check_active_
+        return self.__dependency_check_active__
     
     @_dependency_check_active_.setter
     def _dependency_check_active_(self,value):
@@ -179,7 +185,7 @@ class ConstantsDict(UserDict):
     def __update_changeable_elements__(self,key=None):
         """Checks that all items in the dict that are dicts themselves get their updated modified times. Alternatively, if a key is passed only update said key
         """
-        key_gen = (key,) if key is not None else self.keys() # update either specified key or all keys 
+        key_gen = (key,) if key is not None else super().keys() # update either specified key or all keys 
         for k in key_gen:
             d = super().__getitem__(k) # to avoid recursion as get_stored_attr calls this method
             try:
@@ -230,6 +236,23 @@ class ConstantsDict(UserDict):
         for k in super().keys():
             yield k,self.get_stored_attribute(k)
 
+
+    #region dependency check for looping over
+    def iter_keys(self):
+        self.__was_iterated_over__ = True
+        return super().keys()
+    
+    def iter_values(self):
+        self.__was_iterated_over__ = True
+        return super().values()
+     
+    def iter_items(self):
+        self.__was_iterated_over__ = True
+        return super().items()
+
+    #endregion
+
+
     def as_dict(self,only_values=True):
 
         if only_values:
@@ -243,7 +266,7 @@ class ConstantsDict(UserDict):
         """
 
         def time_checker(time_stamp):
-            for k in self.keys():
+            for k in super(ConstantsDict,self).keys():
                 stored_attr = super(ConstantsDict,self).__getitem__(k)
                 if stored_attr._modified_time_ > time_stamp:
                     yield k,stored_attr.value
@@ -259,44 +282,66 @@ class ConstantsDict(UserDict):
             else:
                 stored_attr._was_used_ = False
 
+        self.__was_iterated_over__ = False
+
     def raise_dependency_flags(self,dependency_dict):
         """
         Raises the dependency flag of all the dependencies in the dict that have value True. If the value is another dict with boolean values, 
-        it is assumed that the corresponding independent var is another UpdatableObject and its dependency flags are raised analogously.
         """
         if dependency_dict is False:
             return 
         
-        for k,v in dependency_dict.items():
-            if isinstance(self.get_stored_attribute(k).value,(UpdatableObject,ConstantsDict)):
-                super(UserDict,self).__getitem__[k].raise_dependency_flags(v)
-            else:
-                if v:
-                    self.get_stored_attribute(k)._was_used_ = True
+       
+
+        if dependency_dict is True:
+            for k,v in self.meta_items():
+                if isinstance(v,(UpdatableObject,ConstantsDict)):
+                    v.raise_dependency_flags(True)
+                else:
+                    v._was_used_ = True
+        else:
+            for k,v in dependency_dict.items():
+                if k == '__ITERATION_LENGTH__':
+                    self.__was_iterated_over__ = v < 1e23
+                else:
+                    val = self.get_stored_attribute(k)
+                    if isinstance(val,(UpdatableObject,ConstantsDict)):
+                        val.raise_dependency_flags(v)
+                    else:
+                        if v:
+                            val._was_used_ = True
+
                 
 
     def get_current_dependency_flags(self):
         self.__update_changeable_elements__()
-        return {k:v._was_used_ for k,v in self.meta_items()}
+        return_dict = {k:v._was_used_ for k,v in self.meta_items()}
+        return_dict['__ITERATION_LENGTH__'] = len(self) if self.__was_iterated_over__ else 1e23
+        return return_dict
     
     def snapshot_used_dependencies(self):
-        """Returns snapshots of all independent vars that were used. For the case where one of the dependencies is itself a ConstantsDict  it returns a dict of dependency snapshots if that.
+        """Returns snapshots of all independent vars that were used. For the case where one of the dependencies is itself a ConstantsDict  it returns a dict of dependency snapshots if that. If all elements have been used, we return as single snapshot stating that 
 
         :return: _description_
         :rtype: _type_
         """
         snapshot_dict = {}
+
+
         for k,val in self.meta_items():
             if val._was_used_:
-                snapshot_dict[k] = val.snapshot_used_dependencies() if isinstance(val,(UpdatableObject,ConstantsDict)) else AttributeSnapshot(val)
+                snapshot_dict[k] = val.snapshot_used_dependencies() if isinstance(val,(UpdatableObject,ConstantsDict)) else AttributeSnapshot(val )
 
-        
+        snapshot_dict['__ITERATION_LENGTH__'] = len(self) if self.__was_iterated_over__ else 1e23 # default value avoids forcing recomputing if element is added
         return snapshot_dict
 
     def update_dependency_flags(self,flags_dict):
         for k,flag in flags_dict.items():
-            self.get_stored_attribute(k)._was_used_ = flag
-
+            if k == '__ITERATION_LENGTH__':
+                self.__was_iterated_over__ = flag < 1e23
+            else:
+                self.get_stored_attribute(k)._was_used_ = flag
+        
     def unify_dependency_flags(self,flags_dict):
         """Combines two flag dicts by performing elementwise or on each entry"""
         to_update = {}
@@ -308,28 +353,37 @@ class ConstantsDict(UserDict):
                     to_update[k] = v
         self.update_dependency_flags(to_update)
 
-    def check_dependency_status(self,snapshot_dict:dict[str,AttributeSnapshot|dict]):
+    def check_dependency_status(self,snapshot_dict:dict[str,AttributeSnapshot|dict]|None):
         # compares the snapshot_dict with the current state of the UpdatableObject to see if it needs updating:
         if snapshot_dict is None: 
-            return True # we need to update
-        
-        for k,snapshot in snapshot_dict.items():
-            if isinstance(snapshot,dict):
-                if self[k].check_dependency_status(snapshot):
-                    break
-            elif snapshot.has_changed():
-                break
+            return True # we need to update since this is the first time it was computed
         else:
-            return False # get here if we finish loop without finding an update
-        return True
+            for k,snapshot in snapshot_dict.items():
+                if k == '__ITERATION_LENGTH__':
+                    if snapshot < len(self):
+                        return True # we iterated over the dict and the length has changed so we must update
+                    else:
+                        continue # skip to next item
+                    
+                if isinstance(snapshot,dict):
+                    if self[k].check_dependency_status(snapshot):
+                        break
+                elif snapshot.has_changed():
+                    break
+            else:
+                return False # get here if we finish loop without finding an update
+            return True
     def update_dependency_snapshots(self,dependency_snaps:dict[str,AttributeSnapshot]):
         new_dependencies = {}
         for k,dep in dependency_snaps.items():
-            val = self[k]
-            if isinstance(val,(UpdatableObject,ConstantsDict)):
-                new_dependencies[k]=val.update_dependency_snapshots(dep)
+            if k=='__ITERATION_LENGTH__':
+                self.__was_iterated_over__ = dep <  1e23
             else:
-                new_dependencies[k] = dep.update()
+                val = self[k]
+                if isinstance(val,(UpdatableObject,ConstantsDict)):
+                    new_dependencies[k]=val.update_dependency_snapshots(dep)
+                else:
+                    new_dependencies[k] = dep.update()
         return new_dependencies
 
 
