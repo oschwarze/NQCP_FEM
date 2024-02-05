@@ -93,10 +93,12 @@ class TestIndependentAttribute(TestCase):
         from nqcpfem.updatable_object import UpdatableObject
         test = UpdatableObject(**{'a':1,'b':2,'c':3})
         
-        self.assertEqual(list(test.independent_vars.keys()),['a','b','c'])
-        
         test.reset_dependency_flags()
-        self.assertEqual(test.snapshot_used_dependencies(),{})       
+        self.assertEqual(test.snapshot_used_dependencies(),{},msg='dependency flags not all set to False')       
+
+        self.assertEqual(list(test.independent_vars.keys()),['a','b','c'])
+
+
         
         a_attr = test.independent_vars.get_stored_attribute('a')
         t = a_attr._modified_time_
@@ -116,6 +118,15 @@ class TestIndependentAttribute(TestCase):
         self.assertNotEqual(list(old_snapshot.values())[0].attribute._modified_time_,list(old_snapshot.values())[0].snapshot_time)
         
         self.assertNotEqual(new_a_attr._modified_time_,t)
+        
+        #test that setting a value also causes it to be set as was used:
+        test = UpdatableObject(**{'a':1,'b':2,'c':3})
+        test.reset_dependency_flags()
+        test.independent_vars['a'] = 10
+        self.assertEqual(len(old_snapshot),1)       
+
+
+
         
         from nqcpfem.updatable_object import auto_update
 
@@ -227,8 +238,21 @@ class TestIndependentAttribute(TestCase):
         #this should now need updating
         test2.independent_vars['a'] = -100
         self.assertEqual(ex2.A2(),1)
-        
-    
+
+        #test that setting an item does not 
+
+
+
+        #test having constants dict inside updatable object
+        from nqcpfem.updatable_object import ConstantsDict
+        const_dict_in_updatable = UpdatableObject(**{'a':1,'b':2,'d':ConstantsDict({'da':10,'db':20})})
+
+        const_dict_in_updatable.reset_dependency_flags()
+        const_dict_in_updatable.independent_vars['d']['da'] = 10
+        F=const_dict_in_updatable.snapshot_used_dependencies()
+        self.assertIn('d',F)
+        self.assertIsInstance(F['d'],dict)
+        self.assertIn('da',F['d'])
     
     def test_method_with_arguments(self):
         self.fail('todo: make version of auto_update which requires hasable arguments to be passed to the method but keeps a dict of the stored values and invalidates all of them (resets the dict) if something is updated')
