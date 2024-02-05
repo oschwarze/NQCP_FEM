@@ -186,12 +186,11 @@ class DotSCDot(System):
         
         def model_update(mu_R_val):
             params = {mu_R:mu_R_val}
-            self.envelope_model.band_model.parameter_dict.update(params)
+            self.envelope_model.band_model.parameter_dict[mu_R] = mu_R_val
+            #self.envelope_model.band_model.parameter_dict.update(params)
             return self.envelope_model
         
         
-        if any(w not in basis_states for w in ('plu','pru','prd','hru','hrd')):
-            raise KeyError(f"the basis states dice must have the following keys: {('plu','pru','prd','hru','hrd')}")
         
         parameter_range = tuple(p+E0 for p in parameter_range)
         if method == 'signed':
@@ -199,20 +198,34 @@ class DotSCDot(System):
             from nqcpfem.parameter_search import IterativeModelSolver
             
             simple_it_solver=IterativeModelSolver(model_update,solver)
-            subspaces = (('plu','pru'),('plu','prd'),('plu','hrd'),('plu','hru')) # T, Tso,D,Dso
+
+            #cast energies to numerically reasonable values
             # apply preprocessing: divide x_range into 100 pieces and make this the unit scale of energy
-            
             E_scale = (parameter_range[1]-parameter_range[0])/100
             LOGGER.debug(f'E_scale: {E_scale}')
             xL = parameter_range[0]/E_scale
             xR = parameter_range[1]/E_scale
 
-            #normalize the states
-            for k,v in basis_states.items():
-                norm= np.linalg.norm(v)
-                if not np.isclose(norm,1):
-                    basis_states[k] = v/np.linalg.norm(v)
+            #normalize basis states and construct subspace projections
+            if isinstance(basis_states,list):
+                subspaces = [(0,i) for i in range(1,len(basis_states))]
 
+                for i,b in enumerate(basis_states):
+                    norm = np.linalg.norm(b)
+                    if not np.isclose(norm,1):
+                        basis_states[i]= b/norm
+                    
+            elif all(w in basis_states for w in ('plu','pru','prd','hru','hrd')):
+                subspaces = (('plu','pru'),('plu','prd'),('plu','hrd'),('plu','hru')) # T, Tso,D,Dso
+                #normalize the states
+                for k,v in basis_states.items():
+                    norm= np.linalg.norm(v)
+                    if not np.isclose(norm,1):
+                        basis_states[k] = v/norm
+
+            else:
+                    raise ValueError('basis_states must either be a dict with keys "plu","pru","prd","hru,"hrd" or a list')
+            
             #this contains the subspaces we wish to compute the overlaps wrt. They are already conjugated!
             subspace_stacks_conj = {N: np.stack([basis_states[N[0]],basis_states[N[1]]]).conj() for N in subspaces}
 
@@ -228,9 +241,10 @@ class DotSCDot(System):
             def eval_func(x):
                 #convert energy back
                 x_real = x*E_scale
+                LOGGER.debug(f'solving with model params: {x_real}')
                 evals,evecs = simple_it_solver(x_real)
                 #cast the energies to to the specified energy_scale
-                evals = evals/E_scale
+                evals = np.real(evals)/E_scale #drop imaginary part
                 
                 #normalisze the eigenvectors:
                 norms = np.linalg.norm(evecs.reshape(evecs.shape[0],-1),axis=1)
@@ -247,6 +261,8 @@ class DotSCDot(System):
             # set the system back to what it was before (to avoid mysterious behaviour when working with the system again)
             self.envelope_model.band_model.independent_vars['preprocessed_array'] = self.envelope_model.band_model.independent_vars['preprocessed_array'].subs(mu_detuning,0)
             del self.envelope_model.band_model.function_dict[mu_detuning] 
+            del self.envelope_model.band_model.parameter_dict[mu_L]
+            del self.envelope_model.band_model.parameter_dict[mu_R]
             
             
             #cast the result back to real units
@@ -1336,6 +1352,11 @@ class BracketMinimizer():
 
 class SignedSearch():
     def __init__(self,xL,xR,evalfunc,xtol,state_sets,overlap_func,method='brentq'):
+        """
+        Find the Coupling coefficient between state sets efficiently. The underlying idea is to view the voided crossing between states as not a minum of the 
+        energy splitting of the states, but as a discrete transition in the signed energy difference (E1(x)-E2(x)). At xmin-delta E1 > E2 but at xmin+delta E1 <E2
+        This insight allows us to find the crossing by finding where the signed energy crossing changes sign. 
+        """
         self.xL =xL
         self.xR =xR
         self.f = evalfunc
@@ -1370,12 +1391,19 @@ class SignedSearch():
         evals,evecs=self.f(x)
         #determine the two relevant states
         results = []
+        log_info = []
         for i,target_states in enumerate(self.target_states):
             overlaps = self.overlap_func(evecs,target_states)
             diff,fidelity=self.energy_diff(overlaps,evals)
-            LOGGER.debug((i,diff,fidelity,self.__current_i__,x))
+            log_info.append((diff,fidelity))
             self.runs[i][x]=((x,diff,fidelity))
             results.append(diff)
+
+        if LOGGER.level <= logging.DEBUG:
+            log_string = f'Run for {self.__current_i__},x={x}:'
+            for i,log_entry in enumerate(log_info):
+                log_string += f'\nPair {i}: Ediff: {log_entry[0]}. F={log_entry[1]}.'
+            LOGGER.debug(log_string)
         return results[self.__current_i__]
     
     
@@ -1405,7 +1433,7 @@ class SignedSearch():
             
         
     
-    def find_bracket(self,i,min_fidelity=0.7):
+    def find_bracket(self,i,min_fidelity=0.8):
         X = np.array([x for x,v in self.runs[i].items() if v[2]>min_fidelity])
         V = np.array([v[1] for v in self.runs[i].values() if v[2]>min_fidelity])
         if len(X)<2:
@@ -1426,7 +1454,7 @@ class SignedSearch():
         if new_bracket[0]>new_bracket[1]:
             LOGGER.debug('fallback to old bracket')
             return (self.xL,self.xR) # fallback to default bracket
-        return 
+        return new_bracket
         
     def minimize(self):
         results = []
@@ -1456,10 +1484,14 @@ class SignedSearch():
             try:
                 res = root_scalar(self.signed_diff,xtol=self.xtol,bracket=bracket,**setup_kwargs)
             except Exception as err:
-                LOGGER.debug('ERROR:',err)
+                LOGGER.debug('ERROR: '+ str(err))
                 LOGGER.debug(((err,bracket,self.runs)))
                 if bracket == (self.xL,self.xR):
-                    raise Exception('big bracket failed.') from err
+                    #determine energy values of the left and the right parts of the bracket for easier printing
+                    run_brackets = self.runs[self.__current_i__]
+                    left_e = [run_brackets[self.xL]]
+                    right_e = [run_brackets[self.xR]]
+                    raise Exception(f'big bracket failed for coupling with index {self.__current_i__}. Bracket values was:\n {left_e}\n{right_e}.') from err
                 #fallback to default bracket
                 res = root_scalar(self.signed_diff,xtol=self.xtol,bracket=(self.xL,self.xR),**setup_kwargs)
 

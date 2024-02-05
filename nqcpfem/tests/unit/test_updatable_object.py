@@ -49,6 +49,21 @@ class TestIndependentAttribute(TestCase):
         self.assertEqual(test.get_stored_attribute('d').value['2'] , 2)
         test.__update_changeable_elements__()
         self.assertTrue(test.get_stored_attribute('d')._modified_time_>T,msg=f'modified_time not updated: {test.get_stored_attribute("d")._modified_time_} vs {T}')
+
+
+
+
+        test = ConstantsDict({'a':1,'b':2,'c':3})
+        for k,v in test.items():
+            pass
+            
+        self.assertTrue(test.__was_iterated_over__)
+        dep = test.snapshot_used_dependencies()
+        self.assertIn('__ITERATION_LENGTH__',dep)
+        self.assertEqual(test.snapshot_used_dependencies()['__ITERATION_LENGTH__'],3)
+
+
+
         
         
     def test_AttributeSnapshot(self):
@@ -93,17 +108,19 @@ class TestIndependentAttribute(TestCase):
         from nqcpfem.updatable_object import UpdatableObject
         test = UpdatableObject(**{'a':1,'b':2,'c':3})
         
-        self.assertEqual(list(test.independent_vars.keys()),['a','b','c'])
-        
         test.reset_dependency_flags()
-        self.assertEqual(test.snapshot_used_dependencies(),{})       
+        self.assertEqual(test.snapshot_used_dependencies(),{'__ITERATION_LENGTH__':1e23},msg='dependency flags not all set to False')       
+
+        self.assertEqual(list(test.independent_vars.keys()),['a','b','c'])
+
+
         
         a_attr = test.independent_vars.get_stored_attribute('a')
         t = a_attr._modified_time_
         _ = test.independent_vars['a'] 
         
         old_snapshot = test.snapshot_used_dependencies()
-        self.assertEqual(len(old_snapshot),1)       
+        self.assertEqual(len(old_snapshot),2) # one attrupe updated + the specification of the length of the dict       
         self.assertEqual(list(old_snapshot.values())[0].attribute,a_attr)       
         
         self.assertEqual(list(old_snapshot.values())[0].attribute._modified_time_,list(old_snapshot.values())[0].snapshot_time)
@@ -116,6 +133,15 @@ class TestIndependentAttribute(TestCase):
         self.assertNotEqual(list(old_snapshot.values())[0].attribute._modified_time_,list(old_snapshot.values())[0].snapshot_time)
         
         self.assertNotEqual(new_a_attr._modified_time_,t)
+        
+        #test that setting a value also causes it to be set as was used:
+        test = UpdatableObject(**{'a':1,'b':2,'c':3})
+        test.reset_dependency_flags()
+        test.independent_vars['a'] = 10
+        self.assertEqual(len(old_snapshot),2)       
+
+
+
         
         from nqcpfem.updatable_object import auto_update
 
@@ -188,9 +214,9 @@ class TestIndependentAttribute(TestCase):
         self.assertEqual(test2.C(),5)
         print(test2._saved_C.dependencies)
         print(test2._saved_A.dependencies)
-        self.assertTrue(len(test2._saved_A.dependencies) == 1)
+        self.assertTrue(len(test2._saved_A.dependencies) == 2) 
         self.assertTrue('a' in test2._saved_A.dependencies.keys())
-        self.assertTrue(len(test2._saved_C.dependencies) == 2,msg=f'method C did not have the correct dependencies: {test2._saved_C.dependencies.keys()}')
+        self.assertTrue(len(test2._saved_C.dependencies) == 3,msg=f'method C did not have the correct dependencies: {test2._saved_C.dependencies.keys()}')
         self.assertTrue('a' in test2._saved_C.dependencies.keys())
         self.assertTrue('c' in test2._saved_C.dependencies.keys())
         
@@ -217,7 +243,7 @@ class TestIndependentAttribute(TestCase):
         self.assertIn('ex',ex2.get_current_dependency_flags())
         
         self.assertIsInstance(ex2._saved_A2.dependencies['ex'],dict)
-        self.assertEqual(len(ex2._saved_A2.dependencies['ex']),1,msg=f'wrong dependencies: {ex2._saved_A2.dependencies["ex"]}')
+        self.assertEqual(len(ex2._saved_A2.dependencies['ex']),2,msg=f'wrong dependencies: {ex2._saved_A2.dependencies["ex"]}')
         self.assertIn('a',ex2._saved_A2.dependencies['ex'])
         
         # calling again should reuse saved_value of A2 so changing this should not affect anything
@@ -227,8 +253,42 @@ class TestIndependentAttribute(TestCase):
         #this should now need updating
         test2.independent_vars['a'] = -100
         self.assertEqual(ex2.A2(),1)
+
+        #test that setting an item does not 
+
+
+
+        #test having constants dict inside updatable object
+        from nqcpfem.updatable_object import ConstantsDict
+        const_dict_in_updatable = UpdatableObject(**{'a':1,'b':2,'d':ConstantsDict({'da':10,'db':20})})
+
+        const_dict_in_updatable.reset_dependency_flags()
+        const_dict_in_updatable.independent_vars['d']['da'] = 10
+        F=const_dict_in_updatable.snapshot_used_dependencies()
+        self.assertIn('d',F)
+        self.assertIsInstance(F['d'],dict)
+        self.assertIn('da',F['d'])
+
+
+
+
+
+        #test that upate happends if a constant dict is looped over and another element is added afterwards
+        class LoopTest(UpdatableObject):
+            def __init__(self,params):
+                super().__init__(stored_dict=params)
+            @auto_update
+            def A(self):
+                return ''.join(self.independent_vars.keys()) 
+
+
+        ltest = LoopTest({'a':1,'b':2,'c':3})
+
+        self.assertTrue(ltest.A(),'abc')
         
-    
-    
+        ltest.independent_vars['stored_dict']['d'] = 10
+
+        self.assertTrue(ltest.A(),'abcd')
+
     def test_method_with_arguments(self):
         self.fail('todo: make version of auto_update which requires hasable arguments to be passed to the method but keeps a dict of the stored values and invalidates all of them (resets the dict) if something is updated')
