@@ -456,7 +456,16 @@ def dummify_non_commutative(expr):
     symbols in the input expression `expr`, and the values are dummy symbols with the same assumptions
     as the corresponding free symbols.
     """
-    return {s:sympy.Dummy(**s.assumptions0) for s in expr.free_symbols}
+
+    # For some reason, having dummy symbols in an expression forces lambdify to dummify, which gives the wrong result as the lambify-dummified symbols are commutative
+    
+    #workaround: create unique symbols using the names of the dummy names
+
+    old_dummies = {s: sympy.Dummy() for s in expr.free_symbols}
+
+    new_dummies = {s: sympy.Symbol(v.name,**s.assumptions0) for s,v in old_dummies.items()}
+    return new_dummies
+    #return {s:sympy.Dummy(**s.assumptions0) for s in expr.free_symbols}
 
 
 def present_functions(expr):

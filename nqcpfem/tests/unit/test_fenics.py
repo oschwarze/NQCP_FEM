@@ -66,7 +66,7 @@ class TestFEniCsModel(unittest.TestCase):
         S = self.model.make_S_array()
         print('solving SHO problem...')
         evals,evecs = eigsh(A,M=S,k=N,sigma=-1000,which='LM')
-        topology, cell_types, x = dolfinx.plot.create_vtk_mesh(self.model.function_space())
+        topology, cell_types, x = dolfinx.plot.vtk_mesh(self.model.function_space())
 
         N_found = evals/(_hbar*self.omega)*self.model.energy_scale()
         print('SHO_modes:\n',N_found)
@@ -172,8 +172,8 @@ class TestFEniCsModel(unittest.TestCase):
         # check that altering the constants dict alters the resulting array but not build another ufl_form.
         old_form = copy.copy(self.model._saved_ufl_form)
         self.model.band_model.independent_vars['constants'][sympy.symbols(r'\hbar')] *= 2
-        self.assertIs(self.model.ufl_form(),old_form.value)
         self.assertEqual(self.model._saved_ufl_form._modified_time_,old_form._modified_time_)
+        self.assertIs(self.model.ufl_form(),old_form.value)
         #del self.model._saved_assemble_array 
         new_A = self.model.assemble_array()
         import numpy as np
@@ -221,15 +221,15 @@ class TestFEniCsModel(unittest.TestCase):
         from nqcpfem import _hbar
         self.setUp()
         self.model.domain.resolution = [100,100]
-        operator = self.model.band_model.post_processed_array().subs({'m':self.mass,'omega':0,'\hbar':_hbar})
+        operator = self.model.band_model.post_processed_array().subs({'m':self.mass,'omega':0,r'\hbar':_hbar})
         O = self.model.project_operator(operator)
         S = self.model.make_S_array()
         
         # assert that the array gives particle in a box eigenmodes:
-        O = O +self.model.infinite_boundary_vec()
+        import scipy.sparse as sparse
+        O = O +sparse.diags(self.model.infinite_boundary_vec().getArray())
         factor = (_hbar**2*np.pi**2/(2*self.mass*self.Lx**2))
         
-        import scipy.sparse as sparse
         eigvals,eigvecs = sparse.linalg.eigsh(O,k=10,M=S,sigma=-1000)
         nsq = eigvals/factor
         np.testing.assert_allclose(nsq,np.round(nsq))

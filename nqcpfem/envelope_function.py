@@ -69,7 +69,7 @@ class ScipyMatrixForm(MatrixForm):
 
 #endregion    
 class EnvelopeFunctionModel(UpdatableObject,ABC):
-    def __int__(self, band_model:BandModel,domain=None,**independent_vars):
+    def __init__(self, band_model:BandModel,domain=None,**independent_vars):
         """
         Model which is used to determine envelope function of som band model
         :param BandModel band_model: envelope_model discribing dispersion relation of system

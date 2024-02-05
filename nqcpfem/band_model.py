@@ -333,7 +333,7 @@ class BandModel(UpdatableObject):
     def numerical_lambda(self,replace_symbolic_functions=True):
         """
 
-        creates a numpy array where the only free symbols left are x,y,z and k_x,k_y,k_z. THe ks are replaced with new symbols with the same name but commutative.
+        creates a numpy array where the only free symbols left are x,y,z and k_x,k_y,k_z. The ks remain as commutative symbols.
 
         Args:
             float_format (_type_, optional): The format for the floats *that are not in the parameter_dict*. Defaults to PETSc.ScalarType.
@@ -372,7 +372,7 @@ class BandModel(UpdatableObject):
 
 
         
-        var_dict.update({k:k for k in self.momentum_symbols})  #casts momentum symbols as commutative from now on!
+        var_dict.update({k:k for k in self.momentum_symbols})  #casts momentum symbols as themseelves so that we can dummify commutative symbols
         var_dict.update({k:k for k in self.position_symbols})  #add position symbols as themselves (do it after function spec to avoid infinite recursion)
         # add function numerical functions to dict so that we can use lambdify
         var_dict.update({s:s for s,f in self.post_processed_functions().items() if isinstance(f,NumericalFunction)})
@@ -406,12 +406,12 @@ class BandModel(UpdatableObject):
         numpy_version = np.array(lambdified_arr(*value_map.values())) # set Dummify to True to make sure that symbol names do not break the code
         return numpy_version
     
-    @auto_update
+    #@auto_update
     def lambdify_non_commutative(self):
         LOGGER.debug('constructing lambda map')
         dummy_map = dummify_non_commutative(self.post_processed_array())
         dummified = self.post_processed_array().subs(dummy_map)
-        lambdified = sympy.lambdify(dummy_map.values(),dummified,dummify=False)
+        lambdified = sympy.lambdify(dummy_map.values(),dummified,dummify=False,docstring_limit=0)
         return dummy_map,lambdified
     
     @auto_update
@@ -485,8 +485,8 @@ class BandModel(UpdatableObject):
                 
                 k_signature = k_component_signature(expand_term(term))
                 arr = disassemble_dict.get(len(k_signature),np.zeros(array.shape+(spatial_dim,)*(len(k_signature)),'O'))
-                # k-s commute, and by convention we will always order them as k_x k_x ... k_x k_y k_y ... k_y k_z k_z ... k_z
-                arr_i = np.unravel_index(i,array.shape)+tuple(k_signature)
+                # k-s commute, and by convention we will always order them as k_x k_x ... k_x k_y k_y ... k_y k_z k_z ... k_z, by sorting the signature
+                arr_i = np.unravel_index(i,array.shape)+tuple(sorted(k_signature))
                 term = term.subs({sympy.symbols(r'\hbar'):sympy.symbols('hbar')})
 
                 addition =   term.subs({k:1 for k in momentum_symbols}) if len(k_signature) else term 

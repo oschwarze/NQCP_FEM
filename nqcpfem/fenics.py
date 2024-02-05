@@ -1,13 +1,15 @@
 from re import A
 from . import band_model,envelope_function
-from .updatable_object import ComputedAttribute,AttributeSnapshot,auto_update
+from .updatable_object import ComputedAttribute,AttributeSnapshot,auto_update,ConstantsDict
 from .envelope_function import Domain
 import numpy as np
 import sympy
 from typing import List,Tuple
+from collections import UserDict
 import ufl
 from mpi4py import MPI
 import dolfinx
+from dolfinx.fem import petsc as dolfinx_petsc
 from petsc4py import PETSc
 
 if PETSc.ScalarType != np.complex128:
@@ -68,6 +70,9 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                             'function_class':function_class,
                             'fix_energy_scale':fix_energy_scale}
         
+
+        self.__dolfinx_constants_constructed__ = set() # set containing names of all fenics constants created for fast lookup
+
         super().__init__(**independent_vars)
     
     @property
@@ -150,6 +155,10 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         """
         if isinstance(function_shape,int):
             function_shape = (function_shape,)
+
+
+        return dolfinx.fem.functionspace(mesh,function_class+(function_shape,))
+        # old code for dolfinx<0.7
         if len(function_shape) == 1:
             if function_shape[0] > 1:
                 # vector case (spinors)
@@ -243,7 +252,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         arr = np.array(arr).astype('complex')
         
         LOGGER.debug('maximizing')
-        e= float(np.max(np.real(arr)))
+        e= PETSc.ScalarType(np.max(np.abs(arr)))
         return e #this is fast enough
         
         for R,T in self.band_model.numerical_tensor_repr().items():
@@ -306,39 +315,56 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 converted_funcs[sym] = f 
         return symbolic_funcs,converted_funcs   
     
+
+
+
     @auto_update
     def dolfinx_constants(self):
         """
         Constructs a dictionary mapping the free sympy symbols of the post-processed array to dolfinx constanps
         """
-
-        LOGGER.debug('creating constants dict')
+        LOGGER.debug('checking for new dolfinx constants')
         # We avoid accessing the parameter_dict (and hence raising the changed flag) by directly looking at the post-processed functions and arrays for free symbols 
         band_model = self.independent_vars['band_model']
         free_syms = tuple( s for s in band_model.post_processed_array().free_symbols if (s not in band_model.momentum_symbols + band_model.position_symbols) and (s.name[-3:] != '(x)')) # functions and special variables are excluded as they do not need casting as dolfinx constants
         func_syms = set() # add free symbols containted
-        for f in band_model.post_processed_functions().values():
-            if isinstance(f,SymbolicFunction):
-                func_syms.update(f.expression.free_symbols)
+        for f in (f for f in band_model.post_processed_functions().values() if isinstance(f,SymbolicFunction)):
+            func_syms.update(f.expression.free_symbols)
         
         func_syms.update(free_syms)
-        free_syms = tuple(func_syms)
+        # Only add 
+
+        missing = func_syms - self.__dolfinx_constants_constructed__
+        if not missing:
+            LOGGER.debug('no new dolfinx constants')
+            return self._saved_dolfinx_constants.value
+        else:
+            if not hasattr(self,'_saved_dolfinx_constants'):
+                LOGGER.debug('creating constants dict')
+                dolfinx_const_dict = {}
+            else:
+                LOGGER.debug('updating dolfinx constants dicts')
+                dolfinx_const_dict = self._saved_dolfinx_constants.value
+
+        
+        free_syms = tuple(missing)
         pos_syms= sympy.symbols('x,y,z')
         
         # parameter dict with all the symbols to assing and the corresponding 
-        new_param_dict =  {s:dolfinx.fem.Constant(self.mesh(), np.complex128(1)) for s in free_syms} #type: ignore
+        dolfinx_const_dict.update({s:dolfinx.fem.Constant(self.mesh(), np.complex128(1)) for s in free_syms}) #type: ignore
         
 
         scalar_function_space = self.__make_function_space__(self.mesh(),self.independent_vars['function_class'],1) # interpolate the scalar functions as the same class as the trial and test functions
-        for sym,func in new_param_dict.items():
+        for sym in free_syms:
+            func = dolfinx_const_dict[sym]
             if sym.name[-3:] == '(x)':
                 if isinstance(func,sympy.Piecewise):
                     # we have to traverse through any sympy piecewise functions and convert them, since UFL stuff cannot handle regular comparison operators. 
                     # NB! There should'nt be any free symbols other than those contained in parameter_dict and constants as wells as x,y, and z in the piecewise expression.
                     # this is done becuase UFL types and sympy types DO NOT MIX and UFL types use special relation operators. 
 
-                    converted_piecewise = convert_piecewise(func,__ufl_relations__,variables = new_param_dict)
-                    new_param_dict[sym] = converted_piecewise
+                    converted_piecewise = convert_piecewise(func,__ufl_relations__,variables = dolfinx_const_dict)
+                    dolfinx_const_dict[sym] = converted_piecewise
                 
                 else:
                     # other functions are interpolated in the usual way
@@ -346,16 +372,19 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                     f.name = sym.name
                     
                     f.interpolate(lambda x: func(x*self.length_scale()))
-                    new_param_dict[sym] = f 
+                    dolfinx_const_dict[sym] = f 
         
         
-        new_param_dict['__energy_scale__'] = dolfinx.fem.Constant(self.mesh(),np.complex128(1)) # add the energy scale as a constant as well since it depends on the parameter_dict and we want the ufl_form to be independent of the parameter_dict
-        if sympy.symbols(r'\hbar') in new_param_dict.keys():
-            new_param_dict[sympy.symbols(r'hbar')] = new_param_dict[sympy.symbols(r'\hbar')]
+        dolfinx_const_dict['__energy_scale__'] = dolfinx.fem.Constant(self.mesh(),PETSc.ScalarType(0)) #dolfinx.fem.Constant(self.mesh(),self.energy_scale()) # add the energy scale as a constant as well since it depends on the parameter_dict and we want the ufl_form to be independent of the parameter_dict
+        if sympy.symbols(r'\hbar') in dolfinx_const_dict.keys():
+            dolfinx_const_dict[sympy.symbols(r'hbar')] = dolfinx_const_dict[sympy.symbols(r'\hbar')]
             
         fem_x = ufl.SpatialCoordinate(self.mesh())
-        new_param_dict.update({pos_syms[i]:fem_x[i]*self.length_scale() for i in range(self.band_model.spatial_dim)}) 
-        return new_param_dict
+        dolfinx_const_dict.update({pos_syms[i]:fem_x[i]*self.length_scale() for i in range(self.band_model.spatial_dim)}) 
+        
+
+        self.__dolfinx_constants_constructed__ = func_syms
+        return ConstantsDict(dolfinx_const_dict)
     @auto_update
     def ufl_form(self):
         LOGGER.debug('computing ufl_form')
@@ -484,34 +513,44 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 L+= term
 
         return L
-    @auto_update
+    
+    
+    #auto_update #this step is fast so we might as well set the value of all constants every time. Avoiding this requires you to know that parameters were added as well as changed which is tough.
     def __gather_constants__(self):
         LOGGER.debug('gathering constants')
-        constants_dict = self.dolfinx_constants()
+        if hasattr(self,'_saved___gather_constants__'):
+            # only update the values of the changed items
+            old_timestamp = self._saved___gather_constants__._modified_time_
+        else:
+            old_timestamp = 0
         
-        # update the value of the constants based on the values stored in the band_model parameter_dict and constants dict:
-        LOGGER.debug('retrieving parameter and constant dicts')
         numbers_dict = self.independent_vars['band_model'].independent_vars['parameter_dict']
+        numbers_dict.__was_iterated_over__ = True 
         const_dict = self.independent_vars['band_model'].independent_vars['constants']
+        const_dict.__was_iterated_over__ = True 
+        constants_dict = self.dolfinx_constants()
+
+
         
-        LOGGER.debug('updating values')
-        for k,const in constants_dict.items():
-            if k == '__energy_scale__':
-                LOGGER.debug('retireving energy scale')
-                const.value = np.complex128(self.energy_scale())
-            elif k not in self.independent_vars['band_model'].position_symbols:
-                try:
-                    const.value = np.complex128(numbers_dict[k])
-                    
-                except KeyError as err:
-                    try:
-                        const.value = np.complex128(const_dict[k])
-                    except KeyError as e:
-                        raise KeyError(f'key {k} in dolfinx_constants() was not found in neither the parameter_dict nor the constants dict of the band_model.') from e
-        #we can now assemble the form  
-        
-        LOGGER.debug('gathering constants complete')
+        getter = lambda k: constants_dict[k]#super(ConstantsDict,constants_dict).__getitem__(k).value
+
+        for k,v in numbers_dict.get_updated_since(old_timestamp):
+            try:
+                getter(k).value = PETSc.ScalarType(v) # Set the value of the Fenics Constant
+            except KeyError as err:
+                pass # This relies on the fact that dolfinx_constants dict is always up to date, containing all the parameters that are actually needed in 
+        for k,v in const_dict.get_updated_since(old_timestamp):
+            try:
+                getter(k).value = PETSc.ScalarType(v) # Set the value of the Fenics Constant
+            except KeyError:
+                pass # This relies on the fact that dolfinx_constants dict is always up to date, containing all the parameters that are actually needed in 
+                
+        getter('__energy_scale__').value = PETSc.ScalarType(self.energy_scale())
+
+
+
         return constants_dict
+
     @auto_update
     def bilinear_form(self,overwrite=False):
         """
@@ -585,9 +624,19 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         boundary_state = np.complex128(boundary_value) if self.independent_vars['band_model'].tensor_shape == (1,1) else np.full(self.independent_vars['band_model'].tensor_shape[::2],boundary_value, dtype='complex')
         infinity_boundary = dolfinx.fem.dirichletbc(boundary_state, boundary_dofs, self.function_space())
         u_boundary = dolfinx.fem.Function(self.function_space())
-        dolfinx.fem.petsc.set_bc(u_boundary.vector, [infinity_boundary])
-        u_boundary.x.scatter_forward()
-        return u_boundary.vector # retun the petsc vector
+        
+        petsc_vec = dolfinx.la.create_petsc_vector(u_boundary.x.index_map,u_boundary.x.block_size)
+
+
+        dolfinx_petsc.set_bc(petsc_vec, [infinity_boundary])
+
+        petsc_vec.assemble()
+        # return a new petsc vector to avoid segmentation fault
+
+
+
+        #u_boundary.x.scatter_forward()
+        return petsc_vec # retun the petsc vector
         from scipy.sparse import diags
         return diags(u_boundary.vector.getArray(),offsets=0,format='csr')
     
@@ -600,7 +649,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         except Exception:
             pass    
 
-        A = dolfinx.fem.petsc.create_matrix(self.bilinear_form())#diagonal=1234e10)
+        A = dolfinx_petsc.create_matrix(self.bilinear_form())#diagonal=1234e10)
         return A
     
     def assemble_array(self,petsc_array=None):
@@ -628,7 +677,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         constants = self.__gather_constants__() # value is not used, but this function also updates the DolfinxConstants 
         
         LOGGER.debug(f'assembling array') #with parameters: {self.independent_vars["band_model"].independent_vars["parameter_dict"]}')
-        A = dolfinx.fem.petsc.assemble_matrix(A,self.bilinear_form(),bcs=self.dolfin_bc())#diagonal=1234e10)
+        A = dolfinx_petsc.assemble_matrix(A,self.bilinear_form(),bcs=self.dolfin_bc())#diagonal=1234e10)
         A.assemble()
 
         A.setDiagonal(self.infinite_boundary_vec().copy(),PETSc.InsertMode.ADD_VALUES)
@@ -706,7 +755,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
             L = u[I]*ufl.conj(v[I])*ufl.dx
 
         form = dolfinx.fem.form(L)
-        A = dolfinx.fem.petsc.assemble_matrix(form,dolfin_bc.value)
+        A = dolfinx_petsc.assemble_matrix(form,dolfin_bc.value)
         A.assemble()
 
         return ComputedAttribute(A,time.time(),old_S_array.constructor,(function_space,band_model,dolfin_bc),old_S_array.attr_name)
@@ -741,7 +790,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
             L = u[I]*ufl.conj(v[I])*ufl.dx
 
         form = dolfinx.fem.form(L)
-        A = dolfinx.fem.petsc.assemble_matrix(form,self.dolfin_bc())
+        A = dolfinx_petsc.assemble_matrix(form,self.dolfin_bc())
         return A
 
 
@@ -785,7 +834,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         form = self.__ufl_tensor_dict_to_bilinear_form__(ufl_tensors)
         assembled_array = dolfinx.fem.form(form)
         
-        A = dolfinx.fem.petsc.assemble_matrix(assembled_array,self.dolfin_bc())#diagonal=1234e10)
+        A = dolfinx_petsc.assemble_matrix(assembled_array,self.dolfin_bc())#diagonal=1234e10)
         A.assemble()
 
         from scipy.sparse import  csr_matrix

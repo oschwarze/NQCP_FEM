@@ -37,7 +37,7 @@ class TestFenicsFEMSolve(TestCase):
         
         for fem_evec in fem_solution[0]:
             diff = np.min(np.abs(box_solution[0]-fem_evec))
-            np.testing.assert_allclose(diff,0,atol=1e-4,),err_msg=f'seed: {rng_seed}' 
+            np.testing.assert_allclose(diff,0,atol=1e-4,err_msg=f'seed: {rng_seed}' )
         
         
         

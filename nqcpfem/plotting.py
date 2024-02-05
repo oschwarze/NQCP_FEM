@@ -1,10 +1,10 @@
 import numpy as np
-import pyvista
 import dolfinx
 
 
 
 def plot_eigenvector(eigenvector,function_space,color=None,scaling =True,length_scale=1,drop_abs=False,keep_sign=False,return_plot=False,**kwargs):
+        import pyvista
         """
         Plot the eigenvector of a band-model
         :param np.ndarray eigenvector: the eigenvector solution
@@ -29,7 +29,7 @@ def plot_eigenvector(eigenvector,function_space,color=None,scaling =True,length_
             scaled_vector = eigenvector
         
         p = pyvista.Plotter()
-        topology, cell_types, x = dolfinx.plot.create_vtk_mesh(function_space)
+        topology, cell_types, x = dolfinx.plot.vtk_mesh(function_space)
         x = x*length_scale # scale x axis
         grid = pyvista.UnstructuredGrid(topology, cell_types, x)
         
@@ -77,12 +77,13 @@ def plot_function(func,function_space,rescale=True,length_scale=1,show_xy_plane=
     :param float length_scale: Evaluates the function at points multiplied by this scale
     :return:
     """
+    import pyvista
     p = pyvista.Plotter()
     from .fenics import FEniCsModel
     if isinstance(function_space,FEniCsModel):
         length_scale = function_space.length_scale()
         function_space=function_space.function_space() #create function_space
-    topology, cell_types, x = dolfinx.plot.create_vtk_mesh(function_space)
+    topology, cell_types, x = dolfinx.plot.vtk_mesh(function_space)
     grid = pyvista.UnstructuredGrid(topology, cell_types, x)
     vals = func(length_scale*x.T)
     if rescale:
@@ -103,12 +104,14 @@ def plot_function(func,function_space,rescale=True,length_scale=1,show_xy_plane=
 
 
 def plot_interpolated_scalar(scalar,function_space):
+
+    import pyvista
     p = pyvista.Plotter()
     from .fenics import FEniCsModel
     if isinstance(function_space,FEniCsModel):
         length_scale = function_space.length_scale()
         function_space=function_space.function_space() #create function_space
-    topology, cell_types, x = dolfinx.plot.create_vtk_mesh(function_space)
+    topology, cell_types, x = dolfinx.plot.vtk_mesh(function_space)
     grid = pyvista.UnstructuredGrid(topology, cell_types, x)
     grid["u"] = scalar
     warped = grid.warp_by_scalar("u")

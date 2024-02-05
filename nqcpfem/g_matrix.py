@@ -161,7 +161,7 @@ class GMatrix(UpdatableObject):
 			import pyvista
 			import dolfinx
 			eigentensors = solution[1]
-			topology, cell_types, x = dolfinx.plot.create_vtk_mesh(envelope_model)
+			topology, cell_types, x = dolfinx.plot.vtk_mesh(envelope_model)
 			for i in range(len(solution[0])):
 				if i>-1:
 					vec,_ = envelope_model.positional_rep(eigentensors[i])
