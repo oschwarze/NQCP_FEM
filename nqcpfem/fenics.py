@@ -18,7 +18,7 @@ if PETSc.ScalarType != np.complex128:
 
 from . import band_model as bm
 from . import symbolic as symb
-from .functions import SymbolicFunction
+from .functions import SymbolicFunction,NumericalFunction,PlaceHolderFunction
 import logging
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
@@ -222,8 +222,6 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
             raise NotImplementedError
         return float(length_scale) # this number should never be complex
     
-    
-    
     def __make_energy_scale__(self):
         """
         determines the energy scale used in the assembled array. This is because numerics are unstable with
@@ -288,6 +286,8 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
 
         converted_funcs = {}
         symbolic_funcs = {}
+        placeholder_functions = []
+
         scalar_function_space = self.__make_function_space__(self.mesh(),self.independent_vars['function_class'],1) # interpolate the scalar functions as the same class as the trial and test functions
         fem_x = ufl.SpatialCoordinate(self.mesh())
         variables =  self.dolfinx_constants().copy()
@@ -304,20 +304,41 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 else:
                     symbolic_funcs[sym] = func.expression
             else:
-                
-                # other functions are interpolated in the usual way
-                f = dolfinx.fem.Function(scalar_function_space)
-                f.name = sym.name
-                
-                #we need to scale the input
-                scaled_func=lambda x:func(x*self.length_scale())
-                f.interpolate(scaled_func)
-                converted_funcs[sym] = f 
+                if isinstance(func,PlaceHolderFunction):
+                    placeholder_functions.append((sym,func))
+                else:
+                    # other functions are interpolated in the usual way
+                    f = dolfinx.fem.Function(scalar_function_space)
+                    f.name = sym.name
+
+                    
+
+                    #we need to scale the input
+                    scaled_func=lambda x:func(x*self.length_scale())
+                    f.interpolate(scaled_func)
+                    converted_funcs[sym] = f 
+
+        for  sym,func in placeholder_functions:
+            # If placeholder functions are derivatives of existing functions then we can fix it. Otherwise we raise an error.
+            from .functions import decompose_func_name,assemble_func_name
+            base_name,derivs,proj = decompose_func_name(sym.name)
+            
+            lookup_sym = sympy.Symbol(assemble_func_name(base_name,None,proj),commutative=False) 
+            base_function = converted_funcs.get(lookup_sym,None)
+            if base_function is None:
+                base_function = symbolic_funcs.get(lookup_sym,None)
+            if base_function is None:
+                raise ValueError(f'PlaceholderFunction: {sym} with base function {lookup_sym} was not found in functions dict.')
+            
+            # take derivatives of the base function now:
+            func = base_function
+            for dir in derivs:
+                func = ufl.grad(func)[:,dir] 
+
+            converted_funcs[sym] =func
+
         return symbolic_funcs,converted_funcs   
     
-
-
-
     @auto_update
     def dolfinx_constants(self):
         """
