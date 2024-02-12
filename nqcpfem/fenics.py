@@ -94,15 +94,21 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         :return:
         """
         mesh_comm = MPI.COMM_WORLD
+        from dolfinx.io import gmshio
+        import gmsh
         if domain.mesh is not None:
-            return domain.mesh
-            # use existing mesh
-            from dolfinx.io import gmshio
-
-            gmsh_model_rank = 0
-            domain, cell_markers, facet_markers = gmshio.model_to_mesh(domain.mesh, mesh_comm, gmsh_model_rank,
-                                                                    gdim=spatial_dim)
-            return domain
+            if isinstance(domain.mesh,str):
+                try:
+                    #try to load the mesh from file
+                    gmsh.initialize()
+                    model = gmsh.model.add("Mesh from file")
+                    gmsh.merge(domain.mesh)
+                    gmsh.model.addPhysicalGroup(2,[0]) # add the surface as a physical group so Dolfinx knows to use it to get the mesh
+                    
+                    mesh, cell_tags, facet_tags = gmshio.model_to_mesh(gmsh.model, MPI.COMM_WORLD, MPI.COMM_WORLD.rank, gdim=self.band_model.spatial_dim)
+                    return mesh
+                except Exception as err:
+                    raise Exception(f'Unable to load domain mesh as string parameter :{domain.mesh}') from err
 
         else:
             if not hasattr(domain,'resolution'):
