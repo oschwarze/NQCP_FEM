@@ -837,7 +837,25 @@ class DotSCDot(System):
         """
         #return
 
+    def make_detuning_potential(self,dummify=True):
+        
+        if dummify:
+            mu_L = sympy.Dummy(r'\mu_{L}') # make them dummies to avoid overwriting them 
+            mu_R = sympy.Dummy(r'\mu_{R}')
+            mu_sc = sympy.Dummy(r'\mu_{sc}')
+            mu_detuning = sympy.Dummy('\mu_{tuning}(x)',commutative=False)
+        else:
+            mu_L = sympy.Symbol(r'\mu_{L}') # make them dummies to avoid overwriting them 
+            mu_R = sympy.Symbol(r'\mu_{R}')
+            mu_sc = sympy.Symbol(r'\mu_{sc}')
+            mu_detuning = sympy.Symbol('\mu_{tuning}(x)',commutative=False)
 
+        detuning = SymbolicFunction(sympy.Piecewise((-mu_sc,self.domains['sc_in']),(-mu_L,self.domains['ld_in']),(-mu_R,self.domains['rd_in']),(0,True)),mu_detuning)
+        self.envelope_model.band_model.add_potential(detuning)
+        self.envelope_model.band_model.parameter_dict[mu_L] = 0
+        self.envelope_model.band_model.parameter_dict[mu_R] = 0
+        self.envelope_model.band_model.parameter_dict[mu_sc] = 0
+        return mu_L,mu_R,mu_sc
 
     def tune_dot(self,dot_index,spin_index,target_E,E_lims,solver,other_dot_tuning=0,tol=1e-2):
         """
@@ -851,11 +869,7 @@ class DotSCDot(System):
         :param tol: the tolerance (in % of the `E_lims` interval). The optimization terminates if the optimal detuning value is determine up to error `tol/100` relative to the length of the interval `E_lims`. 
         :returns: Optimization result as well as the parameters defining the the left and the right dot tuning values
         """
-        mu_L = sympy.Dummy(r'\mu_{L}') # make them dummies to avoid overwriting them 
-        mu_R = sympy.Dummy(r'\mu_{R}')
-        mu_detuning = sympy.Dummy('\mu_{tuning}(x)',commutative=False)
-        detuning = SymbolicFunction(sympy.Piecewise((-mu_L,self.domains['ld_in']),(-mu_R,self.domains['rd_in']),(0,True)),mu_detuning)
-        self.envelope_model.band_model.add_potential(detuning)
+        mu_L,mu_R,mu_detuning = self.make_detuning_potential()
         
         #set mu_d to the mu of the dot to tune and mu_other to the mu of the fixed dot
         if dot_index == 0:
