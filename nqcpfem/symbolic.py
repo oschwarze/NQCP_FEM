@@ -146,9 +146,9 @@ def commutator_map(k):
     def commutator(x):
         x=sympy.sympify(x)
         if any(a.name[-3:] == '(x)' for a in x.atoms() if isinstance(a,sympy.Symbol)):
-            return derivative_of_function(x,conjugate_var)
+            return -sympy.I *derivative_of_function(x,conjugate_var)
         else:
-            return sympy.diff(x,conjugate_var)
+            return -sympy.I*sympy.diff(x,conjugate_var)
     return commutator
     
 def permute_factors(term,start_i,end_i):
@@ -156,7 +156,7 @@ def permute_factors(term,start_i,end_i):
     additional_terms = []
     commutators= commutator_map(term[current_i])
     while current_i != end_i:
-        direction = np.sign(end_i-current_i) # determine which way to step
+        direction = np.sign(end_i-current_i) # etermine which way to step
         this = term[current_i]
         neighbor = term[current_i+direction]
         if commutators(neighbor) != 0:
@@ -219,6 +219,9 @@ def construct_target_signature(term,signature_type):
         return  [False]*(len(term)-Nks)+[True]*Nks 
     elif signature_type == 'FEM':
         return [True]*(Nks-1) + [False]*(len(term)-Nks) + [True]*(bool(Nks))
+
+    else:
+        raise ValueError(f'unkown k-ordering specification: {signature_type}')
     
 def arange_ks_array(array,signature_type:str,signature_reduction_direction:str='left'):
     """Given a sympy array containing expressions as entries, rearranges all the elements to acieve the correct signature

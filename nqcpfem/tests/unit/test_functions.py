@@ -149,7 +149,13 @@ class TestFunctionName(TestCase):
         facit_A = ('B_{xy}(x)',(2,),None)
         testname_B = '(F_{(xyz)})_{12}(x)'
         facit_B = ('F(x)',(0,1,2),(1,2))
-        
+        testname_C = r'F_{xy(xxyy)}(x)'
+        facit_C = ('F_{xy}(x)',(0,0,1,1),None)
+        testname_D = 'f(x)'
+        facit_D = ('f(x)',None,None)
+
+        testname_E = 'f_{(z)}(x)'
+        facit_E = ('f(x)',(2,),None)
         from nqcpfem.functions import decompose_func_name,assemble_func_name
         
         res_A = decompose_func_name(testname_A)
@@ -158,7 +164,18 @@ class TestFunctionName(TestCase):
         res_B = decompose_func_name(testname_B)
         self.assertEqual(res_B,facit_B)
         
+        res_C = decompose_func_name(testname_C)
+        self.assertEqual(res_C,facit_C)
+
+        res_D = decompose_func_name(testname_D)
+        self.assertEqual(res_D,facit_D)
+        res_E = decompose_func_name(testname_E)
+        self.assertEqual(res_E,facit_E)
+        
         self.assertEqual(assemble_func_name(*res_A),testname_A)
         self.assertEqual(assemble_func_name(*res_B),testname_B)
+        self.assertEqual(assemble_func_name(*res_C),testname_C)
+        self.assertEqual(assemble_func_name(*res_D),testname_D)
+        self.assertEqual(assemble_func_name(*res_E),testname_E)
         
     

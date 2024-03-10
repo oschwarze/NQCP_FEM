@@ -9,6 +9,8 @@ from ..envelope_function import EnvelopeFunctionModel,RectangleDomain
 from ..band_model import BandModel
 from ..functions import SymbolicFunction,X,Y,Z
 
+from scipy.optimize import minimize_scalar
+
 import logging
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
@@ -21,11 +23,11 @@ from ..functions import X,Y,Z
 
 
 class DotSCDot(System):
-    def __init__(self,envelope_model:EnvelopeFunctionModel,left_dot:Dot,left_barrier:Barrier,superconductor:Superconductor,right_barrier:Barrier|None = None,right_dot:Dot|None = None,domain_resolution =None):
+    def __init__(self,envelope_model:EnvelopeFunctionModel,left_dot:Dot,left_barrier:Barrier,superconductor:Superconductor,right_barrier:Barrier|None = None,right_dot:Dot|None = None,domain_resolution =None,clipping=False):
         envelope_model = copy(envelope_model)     
         self.left_dot = left_dot
         self.left_barrier = left_barrier
-        
+        self._clipping_ = clipping
         
         self.superconductor = superconductor
 
@@ -72,13 +74,14 @@ class DotSCDot(System):
         sc = self.superconductor
         
         # check that stuff fits:
-        if ld.x+ld.w_x/2 > -sc.length/2 -lb.length:
-            raise ValueError(f'left dot clipping into left barrier by amount: {np.abs(ld.x+ld.w_x/2  +sc.length/2 +lb.length)}')
-        
-        
-        if rd.x-rd.w_x/2 < sc.length/2+rb.length:
-            raise ValueError(f'right dot clipping into right barrier by amount: { np.abs(rd.x-rd.w_x/2 - sc.length/2-rb.length)}')
-        
+        if not self._clipping_:
+            if ld.x+ld.w_x/2 > -sc.length/2 -lb.length:
+                raise ValueError(f'left dot clipping into left barrier by amount: {np.abs(ld.x+ld.w_x/2  +sc.length/2 +lb.length)}')
+            
+            
+            if rd.x-rd.w_x/2 < sc.length/2+rb.length:
+                raise ValueError(f'right dot clipping into right barrier by amount: { np.abs(rd.x-rd.w_x/2 - sc.length/2-rb.length)}')
+            
         s = lambda x:sympy.sympify(x)
         
         
@@ -147,7 +150,10 @@ class DotSCDot(System):
         
     
     def assemble_piecewise(self,domain_values):
-        arg = [ (domain_values[k],dom) for k,dom in self.domains.items()]
+        
+        arg_order = ('sc_in','sc_out','rb','lb','ld_out','ld_in','rd_out','rd_in')
+        arg = [(domain_values[k],self.domains[k]) for k in arg_order]
+        #arg = [ (domain_values[k],dom) for k,dom in self.domains.items()]
         
         return sympy.Piecewise(*arg)
     
@@ -169,7 +175,7 @@ class DotSCDot(System):
         
     
     
-    def perturbative_selection_couplings(self,basis_states,solver,E0,parameter_range,method,**crossing_finder_kwargs):
+    def perturbative_selection_couplings(self,basis_states,solver,E0,parameter_range,method,return_full=False,**crossing_finder_kwargs):
         """
         determine T,Tso,D and Dso coupling between the dots of the system, by taking a dict of states as the reference states.
         :param basis_states: dict with strings: "plu,pru,prd,hru,hrd,"
@@ -267,6 +273,10 @@ class DotSCDot(System):
             
             #cast the result back to real units
             result = [r['val']*E_scale/2 for r in res]
+            root = [r['root']*E_scale for r in res]
+            if return_full:
+                return result,root
+                
             return result
             
             
@@ -399,7 +409,7 @@ class DotSCDot(System):
             from nqcpfem.parameter_search import IterativeModelSolver
             
             simple_it_solver=IterativeModelSolver(model_update,solver)
-            subspaces = ((left_up,right_up),(left_up,right_down),(left_up,right_h_down),(left_up,right_h_up)) # T, Tso,D,Dso
+            subspaces = ((left_up,right_up),(left_up,right_down),(left_up,right_h_up),(left_up,right_h_down)) # T, Tso,D,Dso # convention: hole_down is time-reversed counter part of p_down
             # apply preprocessing: divide x_range into 100 pieces and make this the unit scale of energy
             
             E_scale = (parameter_range[1]-parameter_range[0])/100
@@ -426,8 +436,9 @@ class DotSCDot(System):
             res = S.minimize()
             
             #cast the result back to real units
-            result = [r['val']*E_scale/2 for r in res] 
-            return result
+            result = [r['val']*E_scale/2 for r in res] # divide by 2 to get coupling
+            places = [r['root']*E_scale for r in res] # This is the detuning value need
+            return result,places
             
             
             
@@ -827,6 +838,65 @@ class DotSCDot(System):
         #return
 
 
+
+    def tune_dot(self,dot_index,spin_index,target_E,E_lims,solver,other_dot_tuning=0,tol=1e-2):
+        """
+        Tune the specified dots such that the specified spin state has the desired energy. 
+        :param dot_index: 0 is left dot and 1 is right
+        :param spin_index: 0 is spin down (lowest energy) and 1 i spin up (highest energy).
+        :param target_E: The energy which the specified state should have.
+        :param E_lims: tuple of left and right detuning values, to specifying the interval in which the detuning that gives the target energy must be.
+        :param solver: the solver for solving the model 
+        :param other_dot_tuning: The dot to not tune is fixed at the specified energy. 
+        :param tol: the tolerance (in % of the `E_lims` interval). The optimization terminates if the optimal detuning value is determine up to error `tol/100` relative to the length of the interval `E_lims`. 
+        :returns: Optimization result as well as the parameters defining the the left and the right dot tuning values
+        """
+        mu_L = sympy.Dummy(r'\mu_{L}') # make them dummies to avoid overwriting them 
+        mu_R = sympy.Dummy(r'\mu_{R}')
+        mu_detuning = sympy.Dummy('\mu_{tuning}(x)',commutative=False)
+        detuning = SymbolicFunction(sympy.Piecewise((-mu_L,self.domains['ld_in']),(-mu_R,self.domains['rd_in']),(0,True)),mu_detuning)
+        self.envelope_model.band_model.add_potential(detuning)
+        
+        #set mu_d to the mu of the dot to tune and mu_other to the mu of the fixed dot
+        if dot_index == 0:
+            mu_d = mu_L
+            mu_other = mu_R
+        else:
+            mu_d = mu_R
+            mu_other = mu_L
+        
+        self.envelope_model.band_model.parameter_dict[mu_other] = other_dot_tuning 
+        
+        
+        # make target state projection
+        dot_cls = self.__make_system_classes__()[dot_index] # positional state
+        particle_mask = np.zeros((8,1),dtype='complex')
+        particle_mask[0:4] = 1
+        from . import DefiniteTensorComponent
+        dot_cls = dot_cls.combine_state_cls(DefiniteTensorComponent(particle_mask,'particle'))
+        x_points = self.envelope_model.mesh().geometry.x * self.envelope_model.length_scale()
+
+        #make optimization ocst function (relative to normalized units)
+        mL_shift = np.average(E_lims)
+        E_scale = (E_lims[1]-E_lims[0])/100
+        def cost_func(x):
+            self.envelope_model.band_model.parameter_dict[mu_d] = x*E_scale + mL_shift #cast x to SI units and tune dots
+            sol = solver.solve(self.envelope_model)
+            selection = self.select_subspace((dot_cls,),sol[1],2,x_points=x_points)
+            #spin down has smallest energy and spin up has largest.
+            subspace_Es = sol[0][selection]
+            select_E = np.min(subspace_Es) if spin_index == 0 else np.max(subspace_Es)
+
+            return np.abs(select_E-target_E)/E_scale
+    
+        scalar_min = minimize_scalar(cost_func,[(m-mL_shift)/E_scale for m in E_lims],tol=tol)
+
+        scalar_min['x'] = (scalar_min['x']*E_scale+mL_shift) # cast back to SI
+        scalar_min['fun'] = scalar_min['fun']*E_scale
+        return scalar_min,mu_L,mu_R
+
+
+        
 
 from nqcpfem.parameter_search import IterativeModelSolver
 from typing import Any
