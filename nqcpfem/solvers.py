@@ -299,15 +299,17 @@ class IterativeSolver(ModelSolver):
         self.first_solver = first_solver
         self.second_solver = first_solver if second_solver is None else second_solver
         self.result_vecs = None
+        self.result_evals = None
         
     def solve(self,model):
         if self.result_vecs is None:
             new_res = self.first_solver.solve(model)
-            self.result_vecs = new_res[1]
         else:
             self.second_solver.solver_kwargs['initial_guess'] = self.result_vecs
             new_res = self.second_solver.solve(model)
-            self.result_vecs = new_res[1]
+        
+        self.result_vecs = new_res[1]
+        self.result_evals = new_res[0]
         return new_res
 
 

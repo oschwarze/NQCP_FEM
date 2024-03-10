@@ -24,7 +24,7 @@ LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
 
 
-
+__DOLFINX_INTERPOLATION_PADDING__ = 1e-14 # padding kwarg used when interolating between meshes
 
 class FEniCsModel(envelope_function.EnvelopeFunctionModel):
     def __init__(self, band_model, domain,boundary_condition=None,function_class=('CG',1),fix_energy_scale=False):
@@ -94,22 +94,12 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         :return:
         """
         mesh_comm = MPI.COMM_WORLD
-        from dolfinx.io import gmshio
-        import gmsh
         if domain.mesh is not None:
             if isinstance(domain.mesh,str):
                 try:
-                    #try to load the mesh from file
-                    gmsh.initialize()
-                    model = gmsh.model.add("Mesh from file")
-                    gmsh.merge(domain.mesh)
-                    gmsh.model.addPhysicalGroup(2,[0]) # add the surface as a physical group so Dolfinx knows to use it to get the mesh
-                    
-                    mesh, cell_tags, facet_tags = gmshio.model_to_mesh(gmsh.model, MPI.COMM_WORLD, MPI.COMM_WORLD.rank, gdim=self.band_model.spatial_dim)
-                    return mesh
+                    import_gmsh_mesh(domain.mesh,dim=self.band_model.spatial_dim)
                 except Exception as err:
                     raise Exception(f'Unable to load domain mesh as string parameter :{domain.mesh}') from err
-
         else:
             if not hasattr(domain,'resolution'):
                 raise ValueError(f'specified domain did not have a resolution defined.')
@@ -160,8 +150,9 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         :return:
         """
         if isinstance(function_shape,int):
+            if function_shape == 1:
+                return dolfinx.fem.functionspace(mesh,function_class)
             function_shape = (function_shape,)
-
 
         return dolfinx.fem.functionspace(mesh,function_class+(function_shape,))
         # old code for dolfinx<0.7
@@ -252,6 +243,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         arr = sympy.Array(self.band_model.numerical_array())
         LOGGER.debug('substituting')
         arr=arr.subs({k:-1j/self.length_scale() for k in self.band_model.momentum_symbols}).subs({x:0 for x in self.band_model.position_symbols})
+        arr=arr.subs({s:0 for s in arr.free_symbols}) #replace all functions with 0 as well
         LOGGER.debug('casting back')
         arr = np.array(arr).astype('complex')
         
@@ -293,7 +285,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
         converted_funcs = {}
         symbolic_funcs = {}
         placeholder_functions = []
-
+        _mesh_interpolations_ = [] # list containing previous mesh interpolations to avoid having to redo it 
         scalar_function_space = self.__make_function_space__(self.mesh(),self.independent_vars['function_class'],1) # interpolate the scalar functions as the same class as the trial and test functions
         fem_x = ufl.SpatialCoordinate(self.mesh())
         variables =  self.dolfinx_constants().copy()
@@ -315,13 +307,28 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 else:
                     # other functions are interpolated in the usual way
                     f = dolfinx.fem.Function(scalar_function_space)
-                    f.name = sym.name
+                    f.name = sanitize_function_names(sym.name)
 
-                    
+                    if isinstance(func,FEniCsFunction):
+                        # directly interpolate the ufl_function
+                        for seen_mesh,interpolation_data in _mesh_interpolations_:
+                            if func.ufl_func.function_space.mesh is seen_mesh:
+                                interp_data = interpolation_data
+                                break
+                        else:
+                            func_space = f.function_space
 
-                    #we need to scale the input
-                    scaled_func=lambda x:func(x*self.length_scale())
-                    f.interpolate(scaled_func)
+                            interp_data = dolfinx.fem.create_nonmatching_meshes_interpolation_data(func_space.mesh._cpp_object,func_space.element,func.ufl_func.function_space.mesh._cpp_object,padding=__DOLFINX_INTERPOLATION_PADDING__)       
+                            _mesh_interpolations_.append((func_space.mesh,interp_data))
+
+                        if func.length_scale != self.length_scale():
+                            raise NotImplementedError('nonmatching length scales')
+                        f.interpolate(func.ufl_func,nmm_interpolation_data=interp_data)
+                    else:
+                        #we need to scale the input
+                        scaled_func=lambda x:func(x*self.length_scale())
+                        f.interpolate(scaled_func)
+
                     converted_funcs[sym] = f 
 
         for  sym,func in placeholder_functions:
@@ -339,7 +346,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
             # take derivatives of the base function now:
             func = base_function
             for dir in derivs:
-                func = ufl.grad(func)[:,dir] 
+                func = ufl.grad(func)[dir] 
 
             converted_funcs[sym] =func
 
@@ -396,7 +403,7 @@ class FEniCsModel(envelope_function.EnvelopeFunctionModel):
                 else:
                     # other functions are interpolated in the usual way
                     f = dolfinx.fem.Function(scalar_function_space)
-                    f.name = sym.name
+                    f.name = sanitize_function_names(sym.name)
                     
                     f.interpolate(lambda x: func(x*self.length_scale()))
                     dolfinx_const_dict[sym] = f 
@@ -1167,8 +1174,111 @@ def determine_relation(condition):
 
 
 
-
-
-
-
 # endregion
+    
+#region fenics FEM functions:
+
+class FEniCsFunction(NumericalFunction):
+    def __init__(self,ufl_func:dolfinx.fem.Function,symbol):
+        self.ufl_func = ufl_func
+        self.length_scale = 1 # allows for the ufl_function to be defined on a mesh with different legth scale. the function call F(x) evaluates ufl_func(x/length_scale)
+        super().__init__(self.__call_ufl__,symbol,ufl_func.function_space.mesh.geometry.dim,False)
+
+
+
+
+    def __call_ufl__(self,x,y=None,z=None):
+        if y is None and z is None:
+            x_arr = x
+        else:
+            x_arr = np.stack([ d for d in (x,y,z) if d is not None],axis=1)
+        
+        if self.length_scale != 1:
+            x_arr = x_arr/self.length_scale
+
+        return self.ufl_func(x_arr)
+    
+    @classmethod
+    def interpolate(cls,mesh,values,symbol,function_space=('CG',1),length_scale=1):
+        """
+        construct fenicsfunction from a given mesh and a evaluations on the function
+        """
+
+        if not isinstance(function_space,dolfinx.fem.FunctionSpaceBase):
+            function_space = FEniCsModel.__make_function_space__(mesh,function_space,1)#dolfinx.fem.functionspace(mesh,('CG',1,1))
+        ufl_func = dolfinx.fem.Function(function_space)
+        
+        
+        #pets_vec = ufl_func.vector
+
+        #pets_vec.setArray(values)
+        #pets_vec.assemble()
+
+        ufl_func.vector.getArray()[:] = values
+        ufl_func.x.scatter_forward()
+        new =cls(ufl_func,symbol)
+        new.length_scale = length_scale
+        return new
+
+
+
+#endregion
+#region gmsh import
+def import_gmsh_mesh(filename:str,dim=2):
+    #try to load the mesh from file
+    import gmsh
+    from dolfinx.io import gmshio
+    gmsh.initialize()
+    model = gmsh.model.add("Mesh from file")
+    gmsh.merge(filename)
+    gmsh.model.addPhysicalGroup(2,[0]) # add the surface as a physical group so Dolfinx knows to use it to get the mesh
+    
+    mesh, cell_tags, facet_tags = gmshio.model_to_mesh(gmsh.model, MPI.COMM_WORLD, MPI.COMM_WORLD.rank, gdim=2)
+    return mesh
+
+
+def permute_gmsh_order_to_dolfinx_order(data_array,dolfinx_mesh):
+    """
+    constructs the permutation array for going from point ordering in gmsh mesh to point ordering in dolfinx
+    """
+    output = data_array.copy()
+    perm_indices = dolfinx_mesh.geometry.input_global_indices
+    for i in range(len(data_array)):
+        output[i] = data_array[perm_indices[i]]
+    return output
+
+
+
+def comsol_strain_import(comsol_filename,gmsh_filename,scale_factor=1,function_space=('CG',1),dim=2,length_scale=1):
+    """
+    Given a comsol Sectionwise file, import the strain and mesh and return list of strain functions
+    """
+    from .mesh import comsol_to_gmsh
+
+    func_vals = comsol_to_gmsh(comsol_filename,gmsh_filename,scale_factor=scale_factor)
+
+    # Sectionwise data is ordered like we want it
+    gmsh_mesh =import_gmsh_mesh(gmsh_filename,dim=dim)
+    func_names = sympy.symbols('\epsilon_{11}(x),\epsilon_{22}(x),\epsilon_{33}(x),\epsilon_{12}(x),\epsilon_{13}(x),\epsilon_{23}(x)',commutative=False)
+    val_names = [f'solid2.el{ii} (1)' for ii in (11,22,33,12,13,23)]    
+
+
+    return [FEniCsFunction.interpolate(gmsh_mesh,permute_gmsh_order_to_dolfinx_order(func_vals[n][...,0],gmsh_mesh),s,length_scale=length_scale,function_space=function_space) for n,s in zip(val_names,func_names)]
+    
+#endregion
+
+
+
+def sanitize_function_names(name:str):
+    """
+    Convert a function name (from .Functions which is a sympy symbol) into something that is useable by fenics.
+     """
+    # parentheses backslash and brackets are not allowed
+    new_name = name[:-3] #drop (x)
+    new_name = new_name.replace("\\",'')
+    new_name = new_name.replace("{",'_')
+    new_name = new_name.replace("}",'_')
+    new_name = new_name.replace("(",'_')
+    new_name = new_name.replace(")",'_')
+                            
+    return new_name

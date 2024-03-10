@@ -177,7 +177,7 @@ class TestFEniCsModel(unittest.TestCase):
         #del self.model._saved_assemble_array 
         new_A = self.model.assemble_array()
         import numpy as np
-        np.testing.assert_allclose(old_A.todense(),4*new_A.todense()-3*self.model.infinite_boundary_vec().todense())
+        np.testing.assert_allclose(old_A.todense(),4*new_A.todense()-3*np.diag(self.model.infinite_boundary_vec().getArray()))
         
         self.model.band_model.independent_vars['parameter_dict'][sympy.symbols('omega')] = 0
         old_A = self.model.assemble_array()
@@ -276,7 +276,22 @@ class TestFEniCsModel(unittest.TestCase):
         np.testing.assert_allclose(np.abs(np.einsum('ix,ix',flipped.conj(),ev1)),1,rtol=1e-3)
         
         
+    def test_make_dolfinx_functions(self):
+
+        def numerical_func(x):
+            return x[0]
         
+        from nqcpfem.functions import NumericalFunction
+        func = NumericalFunction(numerical_func,'f(x)',spatial_dependencies=[0])
+        from nqcpfem.band_model import __MOMENTUM_NAMES__
+        import sympy
+        K = sympy.symbols(__MOMENTUM_NAMES__,commutative=False)
+        self.band_model.independent_vars['preprocessed_array'] = self.band_model.independent_vars['preprocessed_array']+ sympy.Array([[func.symbol*K[0]*K[0],0],[0,0]])
+        self.band_model.fix_k_arrangement('FEM',allow_placeholder_functions=True)
+        self.band_model.function_dict[func.symbol] = func
+        result = self.model.converted_functions()
+
+        self.assertEqual(len(result[1]),2)
         
         
         

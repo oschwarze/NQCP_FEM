@@ -626,11 +626,54 @@ class TestBandModel(TestCase):
         test2 = sympy.Array([[V1*x+2,V2*y+3,V3*3],[x,y,z]])
         test_dict = {0:testarray,'a':np.array(test2)}
         facit_dict = {0:testarray.subs(subs_dict),'a':np.array(test2.subs(subs_dict))}
-        res = self.spinor_problem.fix_position(test_dict,*pos)
+        res = self.spinor_prob.fix_position(test_dict,*pos)
         self.assertEqual(facit_dict[0],res[0],msg=f'seed = {rng_seed}. Dict of sympy array not fixed corectly')
         self.assertTrue((facit_dict['a']==res['a']).all(),msg=f'seed = {rng_seed}. Dict of numpy array not fixed correctly')
     
-    
+    def test_rearrange_ks(self):
+        import nqcpfem.band_model as bm
+        from nqcpfem.functions import SymbolicFunction,NumericalFunction
+
+        def numerical(x):
+            return x
+        
+        import sympy
+        X = sympy.symbols(bm.__POSITION_NAMES__,commutative=False)
+        K = sympy.symbols(bm.__MOMENTUM_NAMES__,commutative=False)
+
+        num_sym = sympy.symbols('f(x)',commutative=False)       
+        sym_sym = sympy.symbols('g(x)',commutative=False)       
+        num_func = NumericalFunction(numerical,num_sym,spatial_dependencies=[0,1,2])
+
+        sym_func = SymbolicFunction(X[0]+X[1]+X[2],sym_sym)
+
+        arr = sympy.Array([[X[0]*K[0] + X[1]*K[2], num_sym*K[0], K[1]*num_sym],[K[1]*(sym_sym*X[1]),sym_sym*K[2],0],[0,0,0]])
+
+
+        band_model =bm.BandModel(arr,)
+        band_model.function_dict[num_sym]  = num_func
+        band_model.function_dict[sym_sym]  = sym_func
+        band_model.fix_k_arrangement('all left',allow_placeholder_functions=True)
+        result = band_model.post_processed_array()
+        dfdx = sympy.Symbol('f_{(x)}(x)',commutative=False)
+        dgdz = sympy.Symbol('g_{(z)}(x)',commutative=False)
+
+        l_facit = sympy.Array([[K[0]*X[0]+sympy.I+K[2]*X[1],K[0]*num_sym+sympy.I*dfdx, K[1]*num_sym],[K[1]*(sym_sym*X[1]),K[2]*sym_sym + sympy.I*dgdz,0],[0,0,0]])
+        #check that it is correct.
+        self.assertTrue(__compare_sympy_arrays__(result,l_facit))
+
+        band_model =bm.BandModel(arr,) 
+        band_model.function_dict[num_sym]  = num_func
+        band_model.function_dict[sym_sym]  = sym_func
+        band_model.fix_k_arrangement('all right',allow_placeholder_functions=True)
+        result = band_model.post_processed_array()
+
+        dfdy = sympy.Symbol('f_{(y)}(x)',commutative=False)
+        dgdy = sympy.Symbol('g_{(y)}(x)',commutative=False)
+        r_facit = sympy.Array([[X[0]*K[0] + X[1]*K[2], num_sym*K[0], num_sym* K[1]-sympy.I*dfdy],[(sym_sym*X[1])*K[1]-sympy.I*(dgdy*X[1]+sym_sym),sym_sym*K[2],0],[0,0,0]])
+        
+        self.assertTrue(__compare_sympy_arrays__(result,r_facit))
+
 class TestFreeBoson(TestCase):
     def test_init(self):
         from nqcpfem.band_model import FreeBoson,__MOMENTUM_NAMES__

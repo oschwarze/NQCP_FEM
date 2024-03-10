@@ -15,14 +15,14 @@ class Function(ABC):
     """A class representing a function. This function specifies the available methods for working with functions.
     """
     def __init__(self,symbol,spatial_dependencies,is_constant=False,**kwargs):
-        self.spatial_dependencies = spatial_dependencies # array of ints representing the spatial dependencies
+        self.spatial_dependencies = spatial_dependencies if not isinstance(spatial_dependencies,int) else list(range(spatial_dependencies))# array of ints representing the spatial dependencies
         self.is_constant = is_constant
         self.projection_spec = kwargs.get('projection_spec',None) # spec how function was projected if it is a projected function
         if isinstance(symbol,str):
             symbol = sympy.Symbol(symbol,commutative=False)
         else:
             if symbol.is_commutative or symbol.name[-3:] != '(x)': 
-                raise ValueError(f'function symbols should end with (x) and be non-commutative')
+                raise ValueError(f'function symbols should end with (x) and be non-commutative. Recieved {symbol} ({symbol.name}, is commutative = {symbol.is_commutative})')
             
         self.symbol = symbol # the symbol representing the function. Must end on (x)
         self._derivatives_ = {}
@@ -40,7 +40,7 @@ class Function(ABC):
         """
         raise NotImplementedError()
     
-    def derivative(self,directions):
+    def derivative(self,directions,accept_placeholders=False):
         """Returns a new Function describing the derivative of this function
 
         :param dir: integer representing the direction: 0,1 or 2
@@ -55,15 +55,15 @@ class Function(ABC):
             sym = (X,Y,Z)[d]
             derivative_name = derivative_of_function(derivative_name,sym)
         if derivative_name not in self._derivatives_:
-            self._derivatives_[derivative_name] = self.__compute_derivative__(derivative_name,directions)
+            self._derivatives_[derivative_name] = self.__compute_derivative__(derivative_name,directions,accept_placeholders=accept_placeholders)
         
         return self._derivatives_[derivative_name]
         
     @abstractmethod
-    def __compute_derivative__(self,name,directions):
+    def __compute_derivative__(self,name,directions,accept_placeholders=False):
         """In order to permute K operators with the function we must be able to take derivatives of the function.
-        This should return another Function with symbol being equal to `name` 
-
+        This should return another Function with symbol being equal to `name`.
+        If accept placeholders is True, the we allow the return of placeholder funcitons, such that the derivative can be computed later by some custom method.
         """
         raise NotImplementedError()
     
@@ -103,7 +103,7 @@ class Function(ABC):
         """from f(x) Comute a new function g(x) = (f(x))**order as a new function. The symbol of the new function should be f^order(x) with f being the base name """
         raise NotImplementedError
     
-    def determine_derived_function(self,other_function_name):
+    def determine_derived_function(self,other_function_name,accept_placeholders=False):
         
         
         my_name,my_derivs,my_proj = decompose_func_name(self.symbol.name)
@@ -118,7 +118,7 @@ class Function(ABC):
                 raise ValueError(f'unable to determine funcitonal expression of {other_function_name} from {self.symbol.name} (wrong projection component)')
         elif other_proj is not None:
             # determine which projection we want
-            raise NotImplemnetedError(' TODO FIx this. It should be the responsibility of the band_model to commute Ks!')
+            raise NotImplementedError(' TODO FIx this. It should be the responsibility of the band_model to commute Ks!')
             #new_projection = other_proj
 
         if other_derivs is None:
@@ -133,7 +133,7 @@ class Function(ABC):
         # take new derivatives of the function:
         new_func = self
         for n in new_derivs:
-            new_func = new_func.derivative(n)
+            new_func = new_func.derivative(n,accept_placeholders)
         
         return new_func
                     
@@ -170,7 +170,7 @@ class SymbolicFunction(Function):
         
         return self.expression.subs({X:x,Y:y,Z:z})
     
-    def __compute_derivative__(self,name,directions,):
+    def __compute_derivative__(self,name,directions,accept_placeholders=False):
         res = self.expression
         for d in directions:
             sym = (X,Y,Z)[d]
@@ -577,13 +577,25 @@ class NumericalFunction(Function):
         args = [(x,y,z)[i] for i in self.spatial_dependencies]
         return self._function_(*args)
 
-    def __compute_derivative__(self, name, directions):
-        raise NotImplementedError(f'TODO: numerical differentiation')
+    def __compute_derivative__(self, name, directions,accept_placeholders=False):
+        if any(d not in self.spatial_dependencies for d in directions): #NB! we return 0 if we differentiate wrt. ANY direction where functions is constant!
+            return SymbolicFunction(sympy.sympify(0),name) 
+        
+        if accept_placeholders:
+            # delegate numerical computing of derivatives to dolfinx or something else, so we just denote the derivative symbolically and expect this to be handled later
+            return PlaceHolderFunction(name,self.spatial_dependencies)
+        raise NotImplementedError(f'TODO: numerical differentiation. set allow_placeholder_functions=True when fixing k-arangement of model, to avoid this error (compute derivative using custom method)')
+
         return super().__compute_derivative__(name, directions)
     
     def project_to_basis(self,directions, n_modes, type='box', **kwargs):
         directions,n_modes = self.__projection_arg_preprocess__(directions,n_modes)
-        raise NotImplementedError(f'TODO:  numerial projection')
+        if all(d not in self.spatial_dependencies for d in directions):
+            #trivial case:
+            arr_rep = sympy.tensorproduct(*[sympy.Array(sympy.eye(n)) for n in n_modes])*self.symbol
+            return arr_rep,{self.symbol:self}
+
+        raise NotImplementedError(f'TODO:  numerical projection')
         return super().project_to_basis(n_modes, type, **kwargs)
     
     def pow(self,order):
@@ -603,13 +615,14 @@ class PlaceHolderFunction(NumericalFunction):
         # is instance of numerical function to tell that we do not know anythong about how the functions looks
         if spatial_dependencies is None:
             spatial_dependencies = [] if is_constant else [1,2,3]
+        
 
         super(PlaceHolderFunction,self).__init__(None,symbol,spatial_dependencies,is_constant)
         
     def __call__(self,x,y=None,z=None):
         raise NotImplementedError(f'funciton {self.symbol} was not specified so it is not possible to call it')
     
-    def __compute_derivative__(self, name, directions):
+    def __compute_derivative__(self, name, directions,accept_placeholders=False):
         
         new_func = PlaceHolderFunction(name,self.spatial_dependencies,is_constant=self.is_constant)
         return new_func
