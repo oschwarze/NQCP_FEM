@@ -9,6 +9,8 @@ from ..envelope_function import EnvelopeFunctionModel,RectangleDomain
 from ..band_model import BandModel
 from ..functions import SymbolicFunction,X,Y,Z
 
+from scipy.optimize import minimize_scalar
+
 import logging
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
@@ -836,6 +838,65 @@ class DotSCDot(System):
         #return
 
 
+
+    def tune_dot(self,dot_index,spin_index,target_E,E_lims,solver,other_dot_tuning=0,tol=1e-2):
+        """
+        Tune the specified dots such that the specified spin state has the desired energy. 
+        :param dot_index: 0 is left dot and 1 is right
+        :param spin_index: 0 is spin down (lowest energy) and 1 i spin up (highest energy).
+        :param target_E: The energy which the specified state should have.
+        :param E_lims: tuple of left and right detuning values, to specifying the interval in which the detuning that gives the target energy must be.
+        :param solver: the solver for solving the model 
+        :param other_dot_tuning: The dot to not tune is fixed at the specified energy. 
+        :param tol: the tolerance (in % of the `E_lims` interval). The optimization terminates if the optimal detuning value is determine up to error `tol/100` relative to the length of the interval `E_lims`. 
+        :returns: Optimization result as well as the parameters defining the the left and the right dot tuning values
+        """
+        mu_L = sympy.Dummy(r'\mu_{L}') # make them dummies to avoid overwriting them 
+        mu_R = sympy.Dummy(r'\mu_{R}')
+        mu_detuning = sympy.Dummy('\mu_{tuning}(x)',commutative=False)
+        detuning = SymbolicFunction(sympy.Piecewise((-mu_L,self.domains['ld_in']),(-mu_R,self.domains['rd_in']),(0,True)),mu_detuning)
+        self.envelope_model.band_model.add_potential(detuning)
+        
+        #set mu_d to the mu of the dot to tune and mu_other to the mu of the fixed dot
+        if dot_index == 0:
+            mu_d = mu_L
+            mu_other = mu_R
+        else:
+            mu_d = mu_R
+            mu_other = mu_L
+        
+        self.envelope_model.band_model.parameter_dict[mu_other] = other_dot_tuning 
+        
+        
+        # make target state projection
+        dot_cls = self.__make_system_classes__()[dot_index] # positional state
+        particle_mask = np.zeros((8,1),dtype='complex')
+        particle_mask[0:4] = 1
+        from . import DefiniteTensorComponent
+        dot_cls = dot_cls.combine_state_cls(DefiniteTensorComponent(particle_mask,'particle'))
+        x_points = self.envelope_model.mesh().geometry.x * self.envelope_model.length_scale()
+
+        #make optimization ocst function (relative to normalized units)
+        mL_shift = np.average(E_lims)
+        E_scale = (E_lims[1]-E_lims[0])/100
+        def cost_func(x):
+            self.envelope_model.band_model.parameter_dict[mu_d] = x*E_scale + mL_shift #cast x to SI units and tune dots
+            sol = solver.solve(self.envelope_model)
+            selection = self.select_subspace((dot_cls,),sol[1],2,x_points=x_points)
+            #spin down has smallest energy and spin up has largest.
+            subspace_Es = sol[0][selection]
+            select_E = np.min(subspace_Es) if spin_index == 0 else np.max(subspace_Es)
+
+            return np.abs(select_E-target_E)/E_scale
+    
+        scalar_min = minimize_scalar(cost_func,[(m-mL_shift)/E_scale for m in E_lims],tol=tol)
+
+        scalar_min['x'] = (scalar_min['x']*E_scale+mL_shift) # cast back to SI
+        scalar_min['fun'] = scalar_min['fun']*E_scale
+        return scalar_min,mu_L,mu_R
+
+
+        
 
 from nqcpfem.parameter_search import IterativeModelSolver
 from typing import Any
