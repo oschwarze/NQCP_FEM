@@ -208,7 +208,7 @@ def sort_eigenvalues(eigenvalues,return_index = False):
     sorted = [j for i in zip(E_p,E_n) for j in i]
     if E_p.shape[0] > l:
         sorted.extend(E_p[l:])
-    elif E_p.shape[0] < l:
+    if E_n.shape[0] > l:
         sorted.extend(E_n[l:])
         
     return np.array(sorted)

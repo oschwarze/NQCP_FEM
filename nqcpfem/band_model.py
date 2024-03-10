@@ -33,7 +33,7 @@ __VECTOR_FIELD_NAMES__ =  (r'A_{x}(x)',r'A_{y}(x)',r'A_{z}(x)') # these are alwa
 __STRAIN_NAMES__ = tuple(r'\varepsilon_{'+('x','y','z')[i]+('x','y','z')[j]+'}(x)' for i in range(3) for j in range(i,3))
 
 from .updatable_object import UpdatableObject, auto_update,ComputedAttribute
-    
+from .functions import NumericalFunction,SymbolicFunction
 
 class BandModel(UpdatableObject):
 
@@ -628,7 +628,10 @@ class BandModel(UpdatableObject):
         Args:
             material_name (str): Name of the material.
         """
+
         from . import _m_e,_e
+        from . import UNIT_CONVENTION
+        eV = 1/UNIT_CONVENTION['J to eV']
         if material_name == 'Ge':
             parameter_dict = {r'\Delta_{0}': 0.296,
                             r'\gamma_{1}': 13.38,
@@ -636,12 +639,16 @@ class BandModel(UpdatableObject):
                             r'\gamma_{3}': 5.69,
                             r'kappa': 3.41,
                             r'q': 0.06,
-                            r'D_{u}': 3.3195,
-                            r"D'_{u}": 5.7158,
+                            r'C_{1}':0, # set to zero since it is of no relevance in the LK hamiltonian as it descirbes the cobnduction band shift caused bu strin.
+                            r'D_{d}':-2*eV, # not irellevant since strain is spatially dependent and therefore the overall shift of the valence band matters! 
+                            r'C_{4}':0, # set to zero since Ge is inversion symmetric ( see https://link.aps.org/doi/10.1103/PhysRevB.20.686 )
+                            r"C'_{5}":0,# set to zero since Ge is inversion symmetric ( see https://link.aps.org/doi/10.1103/PhysRevB.20.686 )
+                            r'D_{u}': 3.3195*eV,
+                            r"D'_{u}": 5.7158*eV,
                             r'c_{11}': 12.40,
                             r'c_{12}': 4.13,
                             r'c_{44}': 6.83,
-                            r'a': 5.65791,
+                            r'a': 5.65791*1e-10,
                             r'\epsilon': 16.5,
                             r'm': _m_e,
                             r'q_{c}': _e} #electric charge
@@ -732,13 +739,14 @@ class BandModel(UpdatableObject):
         
         return self
 
-    def fix_k_arrangement(self,signature_type:str,signature_reduction_direction:str='left'):
+    def fix_k_arrangement(self,signature_type:str,signature_reduction_direction:str='left',allow_placeholder_functions=False):
 
         # given an array arrange them and update the new functions that come out of this.
         # determine the updated functions 
         consts = self.independent_vars['model_defining_params']
         consts['k_signature_type'] = signature_type
         consts['k_signature_reduction'] = signature_reduction_direction
+        consts['allow_placeholder_functions']= allow_placeholder_functions
         
 
         self.independent_vars['postprocessing_function_specification']['K-ordering'] = self.rearrange_ks
@@ -1072,15 +1080,25 @@ class BandModel(UpdatableObject):
     
     @staticmethod 
     def rearrange_ks(array,func_dict,model):
+        """
+        Rearrance the Momentum operators by commuting them with other operators in the array. 
+        This in general will involve taking derivatives of specified functions.
+        Default behaviour for handling this is to throw an error if the functions are numerical functions.
+        If ´accept_placeholders´ is True, then derivatives of nummerical functions will be placeholder functions.
+        Handling these placeholder functions can then be
+        """
         consts = model.independent_vars['model_defining_params']
         from .symbolic import arange_ks_array
-        new_array = arange_ks_array(array,consts['k_signature_type'],consts['k_signature_reduction'])
+        new_array = arange_ks_array(array,consts['k_signature_type'],consts['k_signature_reduction'])#,consts.get('allow_placeholder_functions',False))
         
 
         # region functions computing
         from .symbolic import arange_ks_array
         from .functions import decompose_func_name
         
+
+        allow_placeholder_functions = consts.get('allow_placeholder_functions',False)
+
         for s in new_array.free_symbols:
             if s.name[-3:]=='(x)' and s not in func_dict:
                 # try to make s. we know that the symbols have been projected the same way so only derivatives can differ
@@ -1088,7 +1106,8 @@ class BandModel(UpdatableObject):
                 for f,v in func_dict.items():
                     f_decomp = decompose_func_name(f.name)
                     if s_decomp[0] == f_decomp[0] and s_decomp[2] == f_decomp[2]:
-                        func_dict[s] = v.determine_derived_function(s.name)
+                        func_dict[s] = v.determine_derived_function(s.name,
+                                                        accept_placeholders=allow_placeholder_functions)
                         break
                 else:
                     raise ValueError(f'function {s} could not be established')
@@ -1360,36 +1379,56 @@ class LuttingerKohnHamiltonian(BandModel):
         
         return self
     
-    def add_strain(self,epsilon,Dd=None,Du=None,Du_prime=None,C4=None,C5_prime=None):
-        
+    def add_strain(self,epsilon,spatial_dim = 3,Dd=None,Du=None,Du_prime=None,C4=None,C5_prime=None):
+        """
+        Add strain to the model. The strain tensor epsilon must be passed as a list containing the strian components in the order (xx,yy,zz,xy,xz,yx)
+        """
         cs = sympy.symbols(r"D_{d},D_{u} D'_{u},C_{4},C'_{5}")
-        es= sympy.symbols(__STRAIN_NAMES__,comutative=False) # ordered as xx,xy,xz,yy,yz,zz -> 0,6,5,1,3,2
+        es= sympy.symbols(__STRAIN_NAMES__,commutative=False) # ordered as xx,xy,xz,yy,yz,zz -> 0,3,4,1,5,2
         
-        # epsilon _matrix 
+        # epsilon as a symmetric matrix
         e = sympy.Array([[es[0],es[1],es[2]],[es[1],es[3],es[4]],[es[2],es[4],es[5]]])
         
                 
         if isinstance(epsilon,(tuple,list)) and len(epsilon) != 6:
-            raise ValueError('strain tensor must either be passed as an array or a list containing the tensor elements in the forllowing order ´00,11,22,12,02,01´')
+            raise ValueError('strain tensor must either be passed as an array or a list containing the tensor elements in the forllowing order ´00,11,22,01,02,12´')
 
         from . import SP_ANGULAR_MOMENTUM
 
         J = SP_ANGULAR_MOMENTUM['3/2']
-        Jsq =[J[0]@J[0],J[1]@J[1],J[2],J[2]]
-        JJ = sum(Jsq)
+        Jsq =[J[0]@J[0],J[1]@J[1],J[2]@J[2]]
+        JJ = Jsq[0]+Jsq[1]+Jsq[2]
         K = self.momentum_symbols
         
-        strain_term = cs[0]*(es[0]+es[3]+es[5])
+        strain_term = cs[0]*(e[0,0]+e[1,1]+e[2,2])*sympy.eye(4).as_mutable() # Tr(\epsilon) term
         
         
         for i in range(3):
             j = (i+1)%3
             k = (j+1)%3
-            strain_term = strain_term + 2/3*cs[1]*(Jsq[i]-1/3*JJ)+2/3*cs[2]*((J[i]@J[j]+J[j]@J[i])*e[i,j])
-            strain_term = strain_term + cs[3]*(e[j,j]-e[k,k])*K[i]+cs[4]*(e[i,j]*K[j]-e[i,k]*K[j])*J[i]
+            strain_term = strain_term + sympy.sympify(2)/3*cs[1]*(Jsq[i]-1/sympy.sympify(3)*JJ)*e[i,i]+2/(sympy.sympify(3))*cs[2]*((J[i]@J[j]+J[j]@J[i])*e[i,j])
+            strain_term = strain_term + (cs[3]*(e[j,j]-e[k,k])*K[i]+cs[4]*(e[i,j]*K[j]-e[i,k]*K[j]))*J[i]
         
-        self.independent_vars['preprocessed_array'] = self.independent_vars['preprocessed_array'] - strain_term # minus sign because we have a global minus sign in the LK ham from mkaing spectrum particle like
-        raise NotImplementedError()
+        self.independent_vars['preprocessed_array'] = self.independent_vars['preprocessed_array'] + sympy.Array(strain_term)#FIXME  # minus sign because we have a global minus sign in the LK ham from mkaing spectrum particle like
+
+        esym_reorder = [es[i] for i in (0,3,5,1,2,4)]
+
+        #convert epsilons expressions to symbols:
+        eps_functions= []
+        for esym,epsilon_expr in zip(esym_reorder,epsilon):
+            if isinstance(epsilon_expr,Function):
+                func = epsilon_expr
+            elif isinstance(epsilon_expr,Callable):
+                func = NumericalFunction(epsilon_expr,esym,spatial_dependencies=list(range(spatial_dim)))
+            else:
+                func = SymbolicFunction(epsilon_expr,esym)
+
+            self.independent_vars['function_dict'][esym] = func
+
+
+
+
+
     
     #region post-processing_functions
     @staticmethod
